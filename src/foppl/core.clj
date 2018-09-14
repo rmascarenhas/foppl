@@ -1,7 +1,47 @@
 (ns foppl.core
+  "Defines the compiler's main function. Validates command line parameters and
+  gets the compilation pipeline started."
+  (:require [clojure.string :as string])
+  (:require [clojure.java.io :as io])
   (:gen-class))
 
+(def ^:private me "foppl")
+
+(def ^:private help-msg
+  (string/join "\n" [(str "Usage: " me " [source]")
+                     (str "[source] is the path to a file. When - is used, " me " will read from STDIN")]))
+
+(defn- error [msg]
+  "Prints the error message given and the help message to STDERR.
+  Terminates execution with an unsuccessful exit status."
+  (binding [*out* *err*]
+    (println (str "ERROR: " msg))
+    (println)
+    (println help-msg)
+    (System/exit 1)))
+
 (defn -main
-  "I don't do a whole lot ... yet."
+  "Compiler's entrypoint.
+  Reads the file given (or from standard input if no argument is
+  passed on the command line) and produces a Clojure data structure
+  representing a graphical model corresponding to the program given."
   [& args]
-  (println "Hello, World!"))
+
+  ;; only one command line parameter is expected. If more than one is
+  ;; passed, the user does not know how to use FOPPL. Print a help
+  ;; message and terminate
+  (when-not (= (count args) 1)
+    (error "Wrong number of arguments"))
+
+  ;; if not reading from STDIN, make sure that the path given on
+  ;; the command line actually exists as a file on the user's
+  ;; filesystem
+  (let [src (first args)]
+    (when-not (= src "-")
+      (when-not (.exists (io/as-file src))
+        (error (str "File not found: " src)))))
+
+  (let [[path] args
+        handle (if (= path "-") *in* path)
+        source (slurp handle)]
+    (println source)))
