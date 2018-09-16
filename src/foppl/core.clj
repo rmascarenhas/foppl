@@ -43,10 +43,10 @@
         (error (str "File not found: " src)))))
 
   (let [[path] args
-        handle (if (= path "-") *in* path)
-        source (slurp handle)]
+        fd (if (= path "-") *in*  (io/reader path))
+        stream (java.io.PushbackReader. fd)]
     (try
-      (ast/read-source source)
+      (ast/read-source stream)
       (catch RuntimeException e (error (str "Compilation error: " (.getMessage e))))
       ))
   )

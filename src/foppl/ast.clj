@@ -30,8 +30,16 @@
 ;; and a value from a random variable being observed.
 (defrecord observe [dist val])
 
-(defn- to-tree [src]
-  src)
+(defn- to-tree [sexp]
+  sexp)
+
+(defn- to-program [trees]
+  (do
+    (println (count trees))
+    (loop [t trees]
+      (when (seq t)
+        (println (first t))
+        (recur (rest t))))))
 
 ;; protocol to be implemented by the different kinds of visitors that
 ;; validate and make changes to the AST as the FOPPL program is compiled
@@ -42,10 +50,12 @@
   (visit-local-binding [binding])
   (visit-if-cond [if-cond])
   (visit-fn-application [fn-application])
-  (visit-sample [sample])
+  (visit-sample [sampgle])
   (visit-observe [observe]))
 
-(defn read-source [src]
-  (-> src
-      edn/read-string
-      to-tree))
+(defn read-source [stream]
+  (let [sexps (repeatedly #(edn/read {:eof :eof} stream))]
+    (->> sexps
+         (take-while (partial not= :eof))
+         (map to-tree)
+         to-program)))
