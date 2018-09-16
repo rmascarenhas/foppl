@@ -42,6 +42,8 @@
       (when-not (.exists (io/as-file src))
         (error (str "File not found: " src)))))
 
+  ;; creates the PushbackReader object required by ast/read-source
+  ;; and sets up the compilation pipeline
   (let [[path] args
         fd (if (= path "-") *in*  (io/reader path))
         stream (java.io.PushbackReader. fd)]

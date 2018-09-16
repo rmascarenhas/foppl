@@ -44,21 +44,29 @@
 ;; and a value from a random variable being observed.
 (defrecord observe [dist val])
 
+;; indicate to the Clojure compiler that we have a 'to-tree' symbol. Traversal
+;; of the FOPPL code/data-structure happens via indirect recursion
 (declare to-tree)
 
 (defn- invalid-foppl [e]
+  "This function throws a RuntimeException indicating that the expression
+  given is invalid. Should only be calle when an expression is not recognized."
   (throw (RuntimeException. (str "Invalid FOPPL expression: " e))))
 
 (defn- handle-constant [c]
+  "Creates a (numerical) constant record."
   (constant. c))
 
 (defn- handle-variable [name]
+  "Creates a variable record that tags the name given as a variable."
   (variable. (str name)))
 
 (defn- handle-vector [v]
+  "Vectors declared with square braces [e1 e2 ... en]"
   (static-vector. (mapv to-tree v)))
 
 (defn- handle-defn [context]
+  "Creates a function definition node: (defn name [a1 a2 ... an] e)"
   {:pre [(= (count context) 3) (vector? (second context))]}
 
   (let [[name args e] context
@@ -68,6 +76,7 @@
     (definition. name args e)))
 
 (defn- handle-local-binding [context]
+  "Introduces local binding: (let [name val name2 val2] e1 e2 ... en)"
   {:pre [(>= (count context) 2)
          (vector? (first context))
          (even? (count (first context)))]}
@@ -80,28 +89,34 @@
     (local-binding. bindings e)))
 
 (defn- handle-if-cond [context]
+  "If expressions: (if predicate e1 e2)"
   {:pre [(= (count context) 3)]}
 
   (let [[predicate then else] context]
     (if-cond. (to-tree predicate) (to-tree then) (to-tree else))))
 
 (defn- handle-sample [context]
+  "Sampling from a distribution object."
   {:pre [(= (count context) 1)]}
 
   (sample. (to-tree (first context))))
 
 (defn- handle-observe [context]
+  "Conditioning: observing a certain value on a distribution object.
+  (observe dist val)"
   {:pre [(= (count context) 2)]}
 
   (let [[dist val] context]
     (observe. (to-tree dist) (to-tree val))))
 
 (defn- handle-fn-application [name args]
-(let [name (str name)
-      args (map to-tree args)]
-  (fn-application. name args)))
+  "Function application. Function must be previously declared using 'defn'"
+  (let [name (str name)
+        args (map to-tree args)]
+    (fn-application. name args)))
 
 (defn- handle-list [sexp]
+  "Recursively traverses a list, parsing each element."
   {:pre [(symbol? (first sexp))]}
 
   (let [sym (first sexp)
@@ -115,6 +130,8 @@
       :else (handle-fn-application sym cdr))))
 
 (defn- to-tree [sexp]
+  "Given an S-expression, this function will identify the type of the expression,
+  and parse deeply nested expressions recursively"
   (cond
     (number? sexp) (handle-constant sexp)
     (vector? sexp) (handle-vector sexp)
@@ -123,15 +140,9 @@
     :else (invalid-foppl sexp)))
 
 (defn- to-program [[e & defs]]
+  "Creates a program record for the FOPPL program that consists of the
+  expression 'e' given and the collection of definitions 'def'"
   (program. defs e))
-
-;; (defn- to-program [trees]
-;;   (do
-;;     (println (count trees))
-;;     (loop [t trees]
-;;       (when (seq t)
-;;         (println (first t))
-;;         (recur (rest t))))))
 
 ;; protocol to be implemented by the different kinds of visitors that
 ;; validate and make changes to the AST as the FOPPL program is compiled
@@ -148,6 +159,9 @@
   (visit-observe [observe]))
 
 (defn read-source [stream]
+  "Reads a stream of FOPPL source code (needs to implement java.io.PushbackReader).
+  Parses every expression and returns an AST representation of the source code.
+  Throws an exception if there are syntax errors or an expression is not recognized."
   (let [sexps (repeatedly #(edn/read {:eof :eof} stream))]
     (->> sexps
          (take-while (partial not= :eof))
