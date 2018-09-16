@@ -46,7 +46,9 @@
         fd (if (= path "-") *in*  (io/reader path))
         stream (java.io.PushbackReader. fd)]
     (try
-      (ast/read-source stream)
-      (catch RuntimeException e (error (str "Compilation error: " (.getMessage e))))
-      ))
+      (-> stream
+          ast/read-source
+          println)
+      (catch RuntimeException e (error (str "Syntax error: " (.getMessage e))))
+      (catch AssertionError e (error (str "Invariant violated: " (.getMessage e))))))
   )
