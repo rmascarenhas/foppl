@@ -3,6 +3,7 @@
   gets the compilation pipeline started."
   (:require [clojure.string :as string])
   (:require [clojure.java.io :as io])
+  (:require [foppl.ast :as ast])
   (:gen-class))
 
 (def ^:private me "foppl")
@@ -44,4 +45,8 @@
   (let [[path] args
         handle (if (= path "-") *in* path)
         source (slurp handle)]
-    (println source)))
+    (try
+      (ast/read-source source)
+      (catch RuntimeException e (error (str "Compilation error: " (.getMessage e))))
+      ))
+  )
