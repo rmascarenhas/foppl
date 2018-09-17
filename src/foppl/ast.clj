@@ -2,6 +2,10 @@
   "Defines AST data structures and visitor protocol."
   (:require [clojure.edn :as edn]))
 
+;; ================================================================ ;;
+;;                          RECORD DEFINITIONS                      ;;
+;; ================================================================ ;;
+
 ;; a FOPPL program consists of a collection of definitions and
 ;; an expression
 (defrecord program [defs e])
@@ -44,6 +48,10 @@
 ;; and a value from a random variable being observed.
 (defrecord observe [dist val])
 
+;; ================================================================ ;;
+;;                         TRAVERSAL FUNCTIONS                      ;;
+;; ================================================================ ;;
+
 ;; indicate to the Clojure compiler that we have a 'to-tree' symbol. Traversal
 ;; of the FOPPL code/data-structure happens via indirect recursion
 (declare to-tree)
@@ -59,7 +67,7 @@
 
 (defn- handle-variable [name]
   "Creates a variable record that tags the name given as a variable."
-  (variable. (str name)))
+  (variable. (symbol name)))
 
 (defn- handle-vector [v]
   "Vectors declared with square braces [e1 e2 ... en]"
@@ -70,8 +78,8 @@
   {:pre [(= (count context) 3) (vector? (second context))]}
 
   (let [[name args e] context
-        name (str name)
-        args (mapv str args)
+        name (symbol name)
+        args (mapv symbol args)
         e (to-tree e)]
     (definition. name args e)))
 
@@ -79,14 +87,15 @@
   "Introduces local binding: (let [name val name2 val2] e1 e2 ... en)"
   {:pre [(>= (count context) 2)
          (vector? (first context))
-         (even? (count (first context)))]}
+         (even? (count (first context)))
+         (> (count (first context)) 0)]}
 
   (let [pairs (partition 2 (first context))
-        expand (fn [[name e]] (vector (str name) (to-tree e)))
+        expand (fn [[name e]] (vector (to-tree name) (to-tree e)))
         bindings (mapcat expand pairs)
         exps (rest context)
-        e (map to-tree exps)]
-    (local-binding. bindings e)))
+        es (map to-tree exps)]
+    (local-binding. bindings es)))
 
 (defn- handle-if-cond [context]
   "If expressions: (if predicate e1 e2)"
@@ -111,7 +120,7 @@
 
 (defn- handle-fn-application [name args]
   "Function application. Function must be previously declared using 'defn'"
-  (let [name (str name)
+  (let [name (symbol name)
         args (map to-tree args)]
     (fn-application. name args)))
 
@@ -144,19 +153,81 @@
   expression 'e' given and the collection of definitions 'def'"
   (program. defs e))
 
+;; ================================================================ ;;
+;;                             PROTOCOLS                            ;;
+;; ================================================================ ;;
+
 ;; protocol to be implemented by the different kinds of visitors that
 ;; validate and make changes to the AST as the FOPPL program is compiled
 ;; to a target language (graphical model or otherwise).
 (defprotocol visitor
-  (visit-program [program])
-  (visit-constant [c])
-  (visit-variable [var])
-  (visit-definition [def])
-  (visit-local-binding [binding])
-  (visit-if-cond [if-cond])
-  (visit-fn-application [fn-application])
-  (visit-sample [sampgle])
-  (visit-observe [observe]))
+  (visit-program [v program])
+  (visit-constant [v c])
+  (visit-variable [v var])
+  (visit-static-vector [v static-vector])
+  (visit-definition [v def])
+  (visit-local-binding [v binding])
+  (visit-if-cond [v if-cond])
+  (visit-fn-application [v fn-application])
+  (visit-sample [v sample])
+  (visit-observe [v observe]))
+
+(defprotocol node
+  (accept [n v]))
+
+(extend-type program
+  node
+  (accept [n v]
+    (visit-program v n)))
+
+(extend-type constant
+  node
+  (accept [n v]
+    (visit-constant v n)))
+
+(extend-type variable
+  node
+  (accept [n v]
+    (visit-variable v n)))
+
+(extend-type static-vector
+  node
+  (accept [n v]
+    (visit-static-vector v n)))
+
+(extend-type definition
+  node
+  (accept [n v]
+    (visit-definition v n)))
+
+(extend-type local-binding
+  node
+  (accept [n v]
+    (visit-local-binding v n)))
+
+(extend-type if-cond
+  node
+  (accept [n v]
+    (visit-if-cond v n)))
+
+(extend-type fn-application
+  node
+  (accept [n v]
+    (visit-fn-application v n)))
+
+(extend-type sample
+  node
+  (accept [n v]
+    (visit-sample v n)))
+
+(extend-type observe
+  node
+  (accept [n v]
+    (visit-observe v n)))
+
+;; ================================================================ ;;
+;;                       PUBLIC FUNCTIONS                           ;;
+;; ================================================================ ;;
 
 (defn read-source [stream]
   "Reads a stream of FOPPL source code (needs to implement java.io.PushbackReader).

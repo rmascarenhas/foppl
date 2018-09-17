@@ -4,6 +4,7 @@
   (:require [clojure.string :as string])
   (:require [clojure.java.io :as io])
   (:require [foppl.ast :as ast])
+  (:require [foppl.scope :as scope])
   (:gen-class))
 
 (def ^:private me "foppl")
@@ -38,7 +39,7 @@
   ;; the command line actually exists as a file on the user's
   ;; filesystem
   (let [src (first args)]
-    (when-not (= src "-")
+    (when-not (= src "-p")
       (when-not (.exists (io/as-file src))
         (error (str "File not found: " src)))))
 
@@ -50,7 +51,7 @@
     (try
       (-> stream
           ast/read-source
-          println)
+          scope/perform)
       (catch RuntimeException e (error (str "Syntax error: " (.getMessage e))))
       (catch AssertionError e (error (str "Invariant violated: " (.getMessage e))))))
   )
