@@ -17,17 +17,23 @@
    '/
    'abs
    'first
+   'last
    'rest
    'last
    'nth
    'conj
    'cons
    'vector
+   'append
+   'get
+   'put
+   'set
    'loop
    'foreach])
 
 (def ^:private distributions
   ['normal
+   'discrete
    'uniform-continuous
    'beta
    'bernoulli
