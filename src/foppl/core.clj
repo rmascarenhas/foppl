@@ -52,6 +52,13 @@
       (-> stream
           ast/read-source
           scope/perform)
+      (catch clojure.lang.ExceptionInfo e
+        (let [type (-> e ex-data :type)
+              msg (-> (.getMessage e))]
+          (cond
+            (= type :ice) (error (str "Internal Compiler Error: " msg))
+            (= type :invalid-program) (error (str "Invalid FOPPL program: " msg))
+            :else (error (str "Unhandled exception: " msg)))))
       (catch RuntimeException e (error (str "Syntax error: " (.getMessage e))))
       (catch AssertionError e (error (str "Invariant violated: " (.getMessage e))))))
   )

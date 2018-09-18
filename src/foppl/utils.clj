@@ -2,11 +2,11 @@
   "Utility functions"
   )
 
-(defn- runtime-error [& msgs]
-  (throw (RuntimeException. (apply str msgs))))
+(defn- runtime-error [& {:keys [type message]}]
+  (throw (ex-info message {:type type})))
 
 (defn ice [msg]
-  (runtime-error "Internal Compiler Error: " msg))
+  (runtime-error :type :ice :message msg))
 
 (defn foppl-error [msg]
-  (runtime-error "Invalid FOPPL program: " msg))
+  (runtime-error :type :invalid-program :message msg))
