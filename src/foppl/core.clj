@@ -6,6 +6,7 @@
   (:require [foppl.ast :as ast])
   (:require [foppl.scope :as scope])
   (:require [foppl.desugar :as desugar])
+  (:require [foppl.formatter :as formatter])
   (:gen-class))
 
 (def ^:private me "foppl")
@@ -53,7 +54,9 @@
       (-> stream
           ast/read-source
           desugar/perform
-          scope/perform)
+          scope/perform
+          formatter/perform
+          println)
       (catch clojure.lang.ExceptionInfo e
         (let [type (-> e ex-data :type)
               msg (-> (.getMessage e))]
