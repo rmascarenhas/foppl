@@ -19,8 +19,8 @@
   (visit-variable [_ var]
     var)
 
-  (visit-static-vector [v static-vector]
-    (ast/fn-application. 'vector (accept-coll (:es static-vector) v)))
+  (visit-literal-vector [v literal-vector]
+    (ast/fn-application. 'vector (accept-coll (:es literal-vector) v)))
 
   (visit-definition [v {name :name args :args e :e}]
     (ast/definition. name args (accept e v)))

@@ -17,8 +17,9 @@
 (defrecord variable [name])
 
 ;; a FOPPL vector consists of a collection of expressions contained
-;; in square brackets: [e1 e2 ... en]
-(defrecord static-vector [es])
+;; in square brackets: [e1 e2 ... en]. Desugared during the compilation
+;; process to an application of the 'vector' builtin.
+(defrecord literal-vector [es])
 
 ;; a FOPPL function definition consists of a name, a collection
 ;; of arguments, and an expression
@@ -71,7 +72,7 @@
 
 (defn- handle-vector [v]
   "Vectors declared with square braces [e1 e2 ... en]"
-  (static-vector. (mapv to-tree v)))
+  (literal-vector. (mapv to-tree v)))
 
 (defn- handle-defn [context]
   "Creates a function definition node: (defn name [a1 a2 ... an] e)"
@@ -163,7 +164,7 @@
 (defprotocol visitor
   (visit-constant [v c])
   (visit-variable [v var])
-  (visit-static-vector [v static-vector])
+  (visit-literal-vector [v literal-vector])
   (visit-definition [v def])
   (visit-local-binding [v binding])
   (visit-if-cond [v if-cond])
@@ -184,10 +185,10 @@
   (accept [n v]
     (visit-variable v n)))
 
-(extend-type static-vector
+(extend-type literal-vector
   node
   (accept [n v]
-    (visit-static-vector v n)))
+    (visit-literal-vector v n)))
 
 (extend-type definition
   node

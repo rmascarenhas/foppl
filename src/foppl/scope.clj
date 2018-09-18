@@ -136,8 +136,8 @@
       (utils/foppl-error (str "Undefined variable: " name)))
     v)
 
-  (visit-static-vector [v static-vector]
-    (utils/ice "static vectors should have been desgurated during scoping"))
+  (visit-literal-vector [v literal-vector]
+    (utils/ice "literal vectors should have been desgurated during scoping"))
 
   (visit-definition [v {name :name args :args e :e}]
     (->> v
