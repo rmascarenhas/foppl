@@ -21,6 +21,11 @@
 ;; process to an application of the 'vector' builtin.
 (defrecord literal-vector [es])
 
+;; a FOPPL map consists of an even number of expressions surrounded by
+;; curly braces: {e1 e'1 e2 e'2 ... en e'n}. Desugared during the
+;; compilation process to an application of the 'hash-map' builtin
+(defrecord literal-map [es])
+
 ;; a FOPPL function definition consists of a name, a collection
 ;; of arguments, and an expression
 (defrecord definition [name args e])
@@ -73,6 +78,12 @@
 (defn- handle-vector [v]
   "Vectors declared with square braces [e1 e2 ... en]"
   (literal-vector. (mapv to-tree v)))
+
+(defn- handle-map [m]
+  (let [pairs (into [] m)
+        coll (flatten pairs)
+        trees (map to-tree coll)]
+    (literal-map. trees)))
 
 (defn- handle-defn [context]
   "Creates a function definition node: (defn name [a1 a2 ... an] e)"
@@ -145,6 +156,7 @@
   (cond
     (number? sexp) (handle-constant sexp)
     (vector? sexp) (handle-vector sexp)
+    (map? sexp) (handle-map sexp)
     (symbol? sexp) (handle-variable sexp)
     (list? sexp) (handle-list sexp)
     :else (invalid-foppl sexp)))
@@ -165,6 +177,7 @@
   (visit-constant [v c])
   (visit-variable [v var])
   (visit-literal-vector [v literal-vector])
+  (visit-literal-map [v literal-map])
   (visit-definition [v def])
   (visit-local-binding [v binding])
   (visit-if-cond [v if-cond])
@@ -189,6 +202,11 @@
   node
   (accept [n v]
     (visit-literal-vector v n)))
+
+(extend-type literal-map
+  node
+  (accept [n v]
+    (visit-literal-map v n)))
 
 (extend-type definition
   node

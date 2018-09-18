@@ -24,6 +24,7 @@
    'conj
    'cons
    'vector
+   'hash-map
    'append
    'get
    'put
@@ -138,6 +139,9 @@
 
   (visit-literal-vector [v literal-vector]
     (utils/ice "literal vectors should have been desgurated during scoping"))
+
+  (visit-literal-map [v literal-map]
+    (utils/ice "literal maps should have been desgurated during scoping"))
 
   (visit-definition [v {name :name args :args e :e}]
     (->> v
