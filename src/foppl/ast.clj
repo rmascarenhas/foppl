@@ -86,8 +86,8 @@
     (literal-map. trees)))
 
 (defn- handle-defn [context]
-  "Creates a function definition node: (defn name [a1 a2 ... an] e)"
   {:pre [(= (count context) 3) (vector? (second context))]}
+  "Creates a function definition node: (defn name [a1 a2 ... an] e)"
 
   (let [[name args e] context
         name (symbol name)
@@ -96,11 +96,11 @@
     (definition. name args e)))
 
 (defn- handle-local-binding [context]
-  "Introduces local binding: (let [name val name2 val2] e1 e2 ... en)"
   {:pre [(>= (count context) 2)
          (vector? (first context))
          (even? (count (first context)))
          (> (count (first context)) 0)]}
+  "Introduces local binding: (let [name val name2 val2] e1 e2 ... en)"
 
   (let [pairs (partition 2 (first context))
         expand (fn [[name e]] (vector (to-tree name) (to-tree e)))
@@ -110,22 +110,22 @@
     (local-binding. bindings es)))
 
 (defn- handle-if-cond [context]
-  "If expressions: (if predicate e1 e2)"
   {:pre [(= (count context) 3)]}
+  "If expressions: (if predicate e1 e2)"
 
   (let [[predicate then else] context]
     (if-cond. (to-tree predicate) (to-tree then) (to-tree else))))
 
 (defn- handle-sample [context]
-  "Sampling from a distribution object."
   {:pre [(= (count context) 1)]}
+  "Sampling from a distribution object."
 
   (sample. (to-tree (first context))))
 
 (defn- handle-observe [context]
+  {:pre [(= (count context) 2)]}
   "Conditioning: observing a certain value on a distribution object.
   (observe dist val)"
-  {:pre [(= (count context) 2)]}
 
   (let [[dist val] context]
     (observe. (to-tree dist) (to-tree val))))
@@ -137,8 +137,8 @@
     (fn-application. name args)))
 
 (defn- handle-list [sexp]
-  "Recursively traverses a list, parsing each element."
   {:pre [(symbol? (first sexp))]}
+  "Recursively traverses a list, parsing each element."
 
   (let [sym (first sexp)
         cdr (rest sexp)]
