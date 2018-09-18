@@ -128,9 +128,6 @@
 (extend-type scope-visitor
   ast/visitor
 
-  (visit-program [_ _]
-    (utils/ice "program node should be inaccessible to scope visitor"))
-
   (visit-constant [v c]
     v)
 
@@ -140,7 +137,7 @@
     v)
 
   (visit-static-vector [v static-vector]
-    (accept-coll (:es static-vector) v))
+    (utils/ice "static vectors should have been desgurated during scoping"))
 
   (visit-definition [v {name :name args :args e :e}]
     (->> v

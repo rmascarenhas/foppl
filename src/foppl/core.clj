@@ -5,6 +5,7 @@
   (:require [clojure.java.io :as io])
   (:require [foppl.ast :as ast])
   (:require [foppl.scope :as scope])
+  (:require [foppl.desugar :as desugar])
   (:gen-class))
 
 (def ^:private me "foppl")
@@ -51,6 +52,7 @@
     (try
       (-> stream
           ast/read-source
+          desugar/perform
           scope/perform)
       (catch clojure.lang.ExceptionInfo e
         (let [type (-> e ex-data :type)

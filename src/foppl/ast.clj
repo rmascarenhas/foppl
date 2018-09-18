@@ -161,7 +161,6 @@
 ;; validate and make changes to the AST as the FOPPL program is compiled
 ;; to a target language (graphical model or otherwise).
 (defprotocol visitor
-  (visit-program [v program])
   (visit-constant [v c])
   (visit-variable [v var])
   (visit-static-vector [v static-vector])
@@ -174,11 +173,6 @@
 
 (defprotocol node
   (accept [n v]))
-
-(extend-type program
-  node
-  (accept [n v]
-    (visit-program v n)))
 
 (extend-type constant
   node
