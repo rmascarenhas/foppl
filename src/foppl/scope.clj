@@ -17,6 +17,7 @@
    '/
    'abs
    'first
+   'second
    'last
    'rest
    'last
@@ -118,7 +119,7 @@
 (defn- accept-coll [coll v]
   "Visits every node in a collection sequentially, using the resulting visitor
   from one node on the next."
-  (let [verify (fn [v n] (accept n v))]
+  (let [verify (fn [v n]  (accept n v))]
     (reduce verify v coll)))
 
 ;; important note: every visitor function *must* return a scope-visitor record.
@@ -150,16 +151,19 @@
          unscope))
 
   (visit-local-binding [v {bindings :bindings es :es}]
-    (let [pairs (partition 2 bindings)
-          first-name (comp :name first)
-          bound-names (map first-name pairs)]
+    {:pre [(= (count bindings) 2)]}
+
+    (let [bound-name (:name (first bindings))
+          bound-e (last bindings)]
       (->> v
-           (nest-with bound-names)
+           (accept bound-e)
+           (nest-with [bound-name])
            (accept-coll es)
            unscope)))
 
   (visit-if-cond [v {predicate :predicate then :then else :else}]
     (->> v
+         (accept predicate)
          (accept then)
          (accept else)))
 
