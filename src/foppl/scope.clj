@@ -70,17 +70,17 @@
   (environment. env (set names)))
 
 (defn- pop-env [env]
+  {:pre [(some? (:parent env))]}
   "Opposite of 'nest' function. Returns the parent environment of
   the environment given. Calling this function on the root environment
   is an error."
-  {:pre [(some? (:parent env))]}
 
   (:parent env))
 
 (defn- resolved? [env name]
+  {:pre [(some? env) (set? (:names env))]}
   "Performs name resolution. Returns whether the given 'name' is
   bound with respect to the environment given."
-  {:pre [(some? env) (set? (:names env))]}
 
   (cond
     (contains? (:names env) name) true
@@ -105,7 +105,7 @@
 (defn- nest-with [names {env :environment}]
   "Produces a scope-visitor with a nested environment, including
   the given list of 'names' to the known symbols."
-  (let [nested-env (nest env names)]
+  (let [nested-env (nest env (map :name names))]
     (scope-visitor. nested-env)))
 
 (defn- unscope [{env :environment}]
@@ -158,7 +158,7 @@
   (visit-local-binding [v {bindings :bindings es :es}]
     {:pre [(= (count bindings) 2)]}
 
-    (let [bound-name (:name (first bindings))
+    (let [bound-name (first bindings)
           bound-e (last bindings)]
       (->> v
            (accept bound-e)

@@ -35,7 +35,7 @@
     (str "{" (accept-coll es v) "}"))
 
   (visit-definition [v {name :name args :args e :e}]
-    (str "(defn " name " [" (s/join " " args) "]" (accept e v) ")"))
+    (str "(defn " name " [" (accept-coll args v) "]" (accept e v) ")"))
 
   (visit-local-binding [v {bindings :bindings es :es}]
     (str "(let [" (accept-coll bindings v) "]\n" (accept-coll "\n" es v) ")"))

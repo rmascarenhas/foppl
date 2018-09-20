@@ -104,7 +104,7 @@
 
   (let [[name args e] context
         name (symbol name)
-        args (mapv symbol args)
+        args (mapv to-tree args)
         e (to-tree e)]
     (definition. name args e)))
 
@@ -297,7 +297,7 @@
 (defn fresh-sym
   "Returns an unused symbol that can be used during the compilation pipeline to stand
   for unnamed identifiers. Can optionally take a prefix."
-  ([] (fresh-sym "_tmp"))
+  ([] (fresh-sym "tmp-"))
   ([prefix] (gensym prefix)))
 
 (defn read-source [stream]

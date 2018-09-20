@@ -239,9 +239,9 @@
           variable (fn [name] (ast/variable. name))
 
           ;; creates a variable -> expression pair given an expression (recursively
-          ;; transforming the expression). Use the "a_" prefix for similarity with
+          ;; transforming the expression). Use the "a-" prefix for similarity with
           ;; the translation form used in the book.
-          create-binding (fn [e] [(variable (ast/fresh-sym "a_")) (accept e v)])
+          create-binding (fn [e] [(variable (ast/fresh-sym "a-")) (accept e v)])
 
           ;; creates a list of bindings for the expressions passed to the 'loop'
           ;; construct
@@ -252,7 +252,7 @@
 
           ;; creates variable nodes for the nested local bindings to be used
           ;; in each step of the computation
-          accum-vars (map (fn [_] (variable (ast/fresh-sym "v_"))) (range iters))
+          accum-vars (map (fn [_] (variable (ast/fresh-sym "v-"))) (range iters))
 
           ;; generates a name -> expression pair for the cumulative operations of a loop.
           ;; If we are at index 0, the initial expression given is used. Otherwise, the
@@ -293,9 +293,61 @@
     (ast/observe. (accept dist v) (accept val v)))
   )
 
+;; underscores ('_) are used in FOPPL programs (and in other desugaring steps) to
+;; represent unnamed variables. This visitor traverses the AST and replaces every
+;; occurrence of an underscore (in function definitions and local bindings) with
+;; a fresh name
+(defrecord underscore-desugar-visitor [])
+
+(extend-type underscore-desugar-visitor
+  ast/visitor
+
+  (visit-constant [_ c]
+    c)
+
+  (visit-variable [_ {name :name :as variable}]
+    (if (= name '_)
+      (ast/variable. (ast/fresh-sym))
+      variable))
+
+  (visit-literal-vector [v literal-vector]
+    (accept-coll (:es literal-vector) v))
+
+  (visit-literal-map [v literal-map]
+    (accept-coll (:es literal-map) v))
+
+  (visit-definition [v {name :name args :args e :e}]
+    (ast/definition. name (accept-coll args v) (accept e v)))
+
+  (visit-local-binding [v {bindings :bindings es :es}]
+    (let [pairs (partition 2 bindings)
+          desugar-pair (fn [[name e]] [(accept name v) (accept e v)])
+          desugared-bindings (doall (mapcat desugar-pair pairs))]
+      (ast/local-binding. desugared-bindings (accept-coll es v))))
+
+  (visit-foreach [v {c :c bindings :bindings es :es}]
+    (ast/foreach. (accept c v) (accept-coll bindings v) (accept-coll es v)))
+
+  (visit-loop [v {c :c e :e f :f es :es}]
+    (ast/loops. c (accept e v) f (accept-coll es v)))
+
+  (visit-if-cond [v {predicate :predicate then :then else :else}]
+    (ast/if-cond. (accept predicate v) (accept then v) (accept else v)))
+
+  (visit-fn-application [v {name :name args :args}]
+    (ast/fn-application. name (accept-coll args v)))
+
+  (visit-sample [v {dist :dist}]
+    (ast/sample. (accept dist v)))
+
+  (visit-observe [v {dist :dist val :val}]
+    (ast/observe. (accept dist v) (accept val v)))
+  )
+
 (defn- apply-desugaring [v {defs :defs e :e}]
   (let [desugar (fn [n] (accept n v))]
     (ast/program. (map desugar defs) (desugar e))))
+
 
 (defn perform [program]
   "Performs desugaring of a program. Returns a ast/program record containing
@@ -307,7 +359,8 @@
   (let [visitors [(data-structure-desugar-visitor.)
                   (foreach-desugar-visitor.)
                   (loop-desugar-visitor.)
-                  (let-form-desugar-visitor.)]
+                  (let-form-desugar-visitor.)
+                  (underscore-desugar-visitor.)]
         curry (fn [v] (partial apply-desugaring v))
         curried (map curry visitors)
         desugar (apply comp (reverse curried))]
