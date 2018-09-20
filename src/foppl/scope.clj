@@ -31,7 +31,7 @@
    'put
    'set
    'loop
-   'foreach])
+   'range])
 
 (def ^:private distributions
   ['normal
@@ -143,6 +143,9 @@
 
   (visit-literal-map [v literal-map]
     (utils/ice "literal maps should have been desgurated during scoping"))
+
+  (visit-foreach [v foreach]
+    (utils/ice "foreach constructs should have been desugared during scoping"))
 
   (visit-definition [v {name :name args :args e :e}]
     (->> v

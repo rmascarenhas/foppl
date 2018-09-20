@@ -38,6 +38,13 @@
 ;; bind a single free variable
 (defrecord local-binding [bindings es])
 
+;; a FOPPL for each construct is sugared syntax that easily allows a set of
+;; expressions to be evaluated across many collections. Every name in the
+;; collection of bindings given needs to bind to a collection of the
+;; same length. This is desugared to a sequence of local bindings mapped
+;; to a vector
+(defrecord foreach [c bindings es])
+
 ;; a FOPPL if expression consists of a predicate and two expressions:
 ;; one to be evaluated if the predicate evaluates to true; and other
 ;; if it evaluates to false.
@@ -109,6 +116,19 @@
         es (map to-tree exps)]
     (local-binding. bindings es)))
 
+(defn- handle-foreach [context]
+  {:pre [(>= (count context) 2) ;; context: constant c, bindings and expressions
+         (number? (first context)) ;; number of iterations needs to be a constant
+         (vector? (second context)) ;; bindings are given in a vector form
+         (even? (count (second context))) ;; there needs to be an even number of elements in the bindings
+         (> (count (second context)) 0)]} ;; bindings vector should have length greater than zero.
+  "Sugared language construct to allow easy iteration over collections"
+
+  (let [c (first context)
+        bindings (second context)
+        es (rest (rest context))]
+    (foreach. (to-tree c) (map to-tree bindings) (map to-tree es))))
+
 (defn- handle-if-cond [context]
   {:pre [(= (count context) 3)]}
   "If expressions: (if predicate e1 e2)"
@@ -145,6 +165,7 @@
     (cond
       (= sym 'defn) (handle-defn cdr)
       (= sym 'let) (handle-local-binding cdr)
+      (= sym 'foreach) (handle-foreach cdr)
       (= sym 'if) (handle-if-cond sexp cdr)
       (= sym 'sample) (handle-sample cdr)
       (= sym 'observe) (handle-observe cdr)
@@ -180,6 +201,7 @@
   (visit-literal-map [v literal-map])
   (visit-definition [v def])
   (visit-local-binding [v binding])
+  (visit-foreach [v foreach])
   (visit-if-cond [v if-cond])
   (visit-fn-application [v fn-application])
   (visit-sample [v sample])
@@ -217,6 +239,11 @@
   node
   (accept [n v]
     (visit-local-binding v n)))
+
+(extend-type foreach
+  node
+  (accept [n v]
+    (visit-foreach v n)))
 
 (extend-type if-cond
   node

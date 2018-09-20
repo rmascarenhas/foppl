@@ -40,6 +40,9 @@
   (visit-local-binding [v {bindings :bindings es :es}]
     (str "(let [" (accept-coll bindings v) "]\n" (accept-coll "\n" es v) ")"))
 
+  (visit-foreach [v {c :c bindings :bindings es :es}]
+    (str "(foreach " (accept c v) " [" (accept-coll bindings v) "]\n" (accept-coll "\n" es v) ")"))
+
   (visit-if-cond [v {predicate :predicate then :then else :else}]
     (str "(if " (accept predicate v) " " (accept then v) " " (accept else v) ")"))
 
