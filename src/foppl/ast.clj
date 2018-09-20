@@ -38,12 +38,18 @@
 ;; bind a single free variable
 (defrecord local-binding [bindings es])
 
-;; a FOPPL for each construct is sugared syntax that easily allows a set of
+;; a FOPPL foreach construct is sugared syntax that easily allows a set of
 ;; expressions to be evaluated across many collections. Every name in the
 ;; collection of bindings given needs to bind to a collection of the
 ;; same length. This is desugared to a sequence of local bindings mapped
 ;; to a vector
 (defrecord foreach [c bindings es])
+
+;; a FOPPL loop construct is another sugared syntax that enables computations
+;; to be stitched together. The function f is applied to each element of
+;; the collection, and the result of the computation is passed along as a
+;; parameter to the next computation.
+(defrecord loops [c e f es])
 
 ;; a FOPPL if expression consists of a predicate and two expressions:
 ;; one to be evaluated if the predicate evaluates to true; and other
@@ -129,6 +135,18 @@
         es (rest (rest context))]
     (foreach. (to-tree c) (map to-tree bindings) (map to-tree es))))
 
+(defn- handle-loop [context]
+  {:pre [(>= (count context) 4) ;; context: constant c, initial expression e, function f, and arguments
+         (number? (first context)) ;; number of iterations needs to be a constant
+         (symbol? (nth context 2))]} ;; function name needs to be a symbol
+  "Sugared language construct to allow cumulative computations"
+
+  (let [c (first context)
+        e (second context)
+        f (nth context 2)
+        es (rest (rest (rest context)))]
+    (loops. (to-tree c) (to-tree e) f (map to-tree es))))
+
 (defn- handle-if-cond [context]
   {:pre [(= (count context) 3)]}
   "If expressions: (if predicate e1 e2)"
@@ -166,6 +184,7 @@
       (= sym 'defn) (handle-defn cdr)
       (= sym 'let) (handle-local-binding cdr)
       (= sym 'foreach) (handle-foreach cdr)
+      (= sym 'loop) (handle-loop cdr)
       (= sym 'if) (handle-if-cond sexp cdr)
       (= sym 'sample) (handle-sample cdr)
       (= sym 'observe) (handle-observe cdr)
@@ -202,6 +221,7 @@
   (visit-definition [v def])
   (visit-local-binding [v binding])
   (visit-foreach [v foreach])
+  (visit-loop [v loops])
   (visit-if-cond [v if-cond])
   (visit-fn-application [v fn-application])
   (visit-sample [v sample])
@@ -245,6 +265,11 @@
   (accept [n v]
     (visit-foreach v n)))
 
+(extend-type loops
+  node
+  (accept [n v]
+    (visit-loop v n)))
+
 (extend-type if-cond
   node
   (accept [n v]
@@ -268,6 +293,12 @@
 ;; ================================================================ ;;
 ;;                       PUBLIC FUNCTIONS                           ;;
 ;; ================================================================ ;;
+
+(defn fresh-sym
+  "Returns an unused symbol that can be used during the compilation pipeline to stand
+  for unnamed identifiers. Can optionally take a prefix."
+  ([] (fresh-sym "_tmp"))
+  ([prefix] (gensym prefix)))
 
 (defn read-source [stream]
   "Reads a stream of FOPPL source code (needs to implement java.io.PushbackReader).

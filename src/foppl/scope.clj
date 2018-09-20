@@ -30,7 +30,6 @@
    'get
    'put
    'set
-   'loop
    'range])
 
 (def ^:private distributions
@@ -138,14 +137,17 @@
       (utils/foppl-error (str "Undefined variable: " name)))
     v)
 
-  (visit-literal-vector [v literal-vector]
+  (visit-literal-vector [_ _]
     (utils/ice "literal vectors should have been desgurated during scoping"))
 
-  (visit-literal-map [v literal-map]
+  (visit-literal-map [_ _]
     (utils/ice "literal maps should have been desgurated during scoping"))
 
-  (visit-foreach [v foreach]
+  (visit-foreach [_ _]
     (utils/ice "foreach constructs should have been desugared during scoping"))
+
+  (visit-loop [_ _]
+    (utils/ice "loop constructs should have been desugared during scoping"))
 
   (visit-definition [v {name :name args :args e :e}]
     (->> v
