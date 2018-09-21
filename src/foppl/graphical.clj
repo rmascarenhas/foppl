@@ -346,7 +346,7 @@
           Y (:Y graph)
 
           ;; generate a fresh symbol
-          fresh (ast/fresh-sym "sample")
+          random-v (ast/fresh-sym "sample")
 
           ;; find the set of free variables of the deterministic
           ;; expression representing the distribution
@@ -354,24 +354,74 @@
 
           ;; find the probability density function of the distribution
           ;; being sampled, given by the SCORE function
-          pdf (score deterministic-dist fresh)
+          pdf (score deterministic-dist random-v)
 
           ;; for each of the free variables in the distribution,
           ;; create an edge between it and the fresh variable representing
           ;; this random variable
-          new-edges (set (map (fn [fv] [fv, fresh]) free-vars))
+          new-edges (set (map (fn [fv] [fv, random-v]) free-vars))
 
           ;; the resulting graph adds the fresh variable to the set
           ;; of vertices, the new edges computed above, and a mapping
           ;; between the fresh variable and the pdf function.
-          result-graph (G. (set/union V (set fresh)) (set/union A new-edges) (merge P {fresh pdf}) Y)]
+          result-graph (G. (set/union V #{random-v}) (set/union A new-edges) (merge P {random-v pdf}) Y)]
 
       ;; the deterministic expression of a sample expression is a variable with
       ;; the fresh name generated in the bindings above
-      (model. result-graph (ast/variable. fresh))))
+      (model. result-graph (ast/variable. random-v))))
 
-  (visit-observe [v {dist :dist val :val}]
-    )
+  (visit-observe [{phi :phi :as v} {dist :dist val :val}]
+    (let [;; first step: recursively determine the graph and deterministic expression
+          ;; corresponding to the distribution of the observation
+          g1 (accept dist v)
+          graph-1 (:G g1)
+          e1 (:E g1)
+
+          ;; then recursively compute the graphical model for the observed value
+          g2 (accept val v)
+          graph-2 (:G g2)
+          e2 (:E g2)
+
+          ;; merge both graphs together, and destructure them into their
+          ;; constituent parts
+          merged-graphs (merge-graphs graph-1 graph-2)
+          V (:V merged-graphs)
+          A (:A merged-graphs)
+          P (:P merged-graphs)
+          Y (:Y merged-graphs)
+
+          ;; create a new, fresy symbol for the random variable that will
+          ;; correspond to this observation
+          random-v (ast/fresh-sym "observe")
+
+          ;; make sure the distribution expression is indeed of a distribution type
+          ;; by calculating its score (which will panic in case it is not)
+          f1 (score e1 random-v)
+
+          ;; make sure the density function takes into account the control flow
+          ;; predicate phi
+          f (if (= phi true) f1 (ast/if-cond. phi f1 (ast/constant. 1)))
+
+          ;; let Z be the set of free variables in f excluding the fresh
+          ;; variable created
+          z (set/difference (fv f) #{random-v})
+
+          ;; validation step: ensure that the observed value has no random
+          ;; variables in it (i.e., it is deterministic)
+          _ (when-not (empty? (set/intersection (fv e2) V)) (utils/foppl-error "observed value is not deterministic"))
+
+          ;; creates a collection of mappings from free-variables to the
+          ;; random variable created
+          b (map (fn [free-var] [free-var, random-v]) z)
+
+          ;; finally, the resulting graph adds the random variable created here to the
+          ;; set of vertices of the graph; adds the set of edges 'b' computed above;
+          ;; maps the random variable to its probability density function; and adds
+          ;; the observed value to the observed expression e2
+          resulting-graph (G. (set/union V #{random-v}) (set/union A (set b)) (merge P {random-v f}) (merge Y {random-v e2}))]
+
+      ;; the model returned uses the observed expression as its result
+      (model. resulting-graph e2)))
   )
 
 
