@@ -138,10 +138,10 @@
     v)
 
   (visit-literal-vector [_ _]
-    (utils/ice "literal vectors should have been desgurated during scoping"))
+    (utils/ice "literal vectors should have been desugared during scoping"))
 
   (visit-literal-map [_ _]
-    (utils/ice "literal maps should have been desgurated during scoping"))
+    (utils/ice "literal maps should have been desugared during scoping"))
 
   (visit-foreach [_ _]
     (utils/ice "foreach constructs should have been desugared during scoping"))
