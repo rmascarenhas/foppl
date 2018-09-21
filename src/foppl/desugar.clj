@@ -241,7 +241,7 @@
           ;; creates a variable -> expression pair given an expression (recursively
           ;; transforming the expression). Use the "a-" prefix for similarity with
           ;; the translation form used in the book.
-          create-binding (fn [e] [(variable (ast/fresh-sym "a-")) (accept e v)])
+          create-binding (fn [e] [(variable (ast/fresh-sym "a")) (accept e v)])
 
           ;; creates a list of bindings for the expressions passed to the 'loop'
           ;; construct
@@ -252,7 +252,7 @@
 
           ;; creates variable nodes for the nested local bindings to be used
           ;; in each step of the computation
-          accum-vars (map (fn [_] (variable (ast/fresh-sym "v-"))) (range iters))
+          accum-vars (map (fn [_] (variable (ast/fresh-sym "v"))) (range iters))
 
           ;; generates a name -> expression pair for the cumulative operations of a loop.
           ;; If we are at index 0, the initial expression given is used. Otherwise, the

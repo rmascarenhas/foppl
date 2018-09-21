@@ -297,8 +297,8 @@
 (defn fresh-sym
   "Returns an unused symbol that can be used during the compilation pipeline to stand
   for unnamed identifiers. Can optionally take a prefix."
-  ([] (fresh-sym "tmp-"))
-  ([prefix] (gensym prefix)))
+  ([] (fresh-sym "tmp"))
+  ([prefix] (gensym (str prefix "-"))))
 
 (defn read-source [stream]
   "Reads a stream of FOPPL source code (needs to implement java.io.PushbackReader).
