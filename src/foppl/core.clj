@@ -6,7 +6,6 @@
   (:require [foppl.ast :as ast])
   (:require [foppl.scope :as scope])
   (:require [foppl.desugar :as desugar])
-  (:require [foppl.formatter :as formatter])
   (:require [foppl.graphical :as graphical])
   (:gen-class))
 

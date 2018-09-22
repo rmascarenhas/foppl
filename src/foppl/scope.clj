@@ -15,6 +15,7 @@
    '-
    '*
    '/
+   '=
    'abs
    'first
    'second

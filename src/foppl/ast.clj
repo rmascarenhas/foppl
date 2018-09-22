@@ -185,7 +185,7 @@
       (= sym 'let) (handle-local-binding cdr)
       (= sym 'foreach) (handle-foreach cdr)
       (= sym 'loop) (handle-loop cdr)
-      (= sym 'if) (handle-if-cond sexp cdr)
+      (= sym 'if) (handle-if-cond cdr)
       (= sym 'sample) (handle-sample cdr)
       (= sym 'observe) (handle-observe cdr)
       :else (handle-fn-application sym cdr))))

@@ -38,10 +38,10 @@
     (str "(defn " name " [" (accept-coll args v) "]" (accept e v) ")"))
 
   (visit-local-binding [v {bindings :bindings es :es}]
-    (str "(let [" (accept-coll bindings v) "]\n" (accept-coll "\n" es v) ")"))
+    (str "(let [" (accept-coll bindings v) "]" (accept-coll es v) ")"))
 
   (visit-foreach [v {c :c bindings :bindings es :es}]
-    (str "(foreach " (accept c v) " [" (accept-coll bindings v) "]\n" (accept-coll "\n" es v) ")"))
+    (str "(foreach " (accept c v) " [" (accept-coll bindings v) "]" (accept-coll "\n" es v) ")"))
 
   (visit-if-cond [v {predicate :predicate then :then else :else}]
     (str "(if " (accept predicate v) " " (accept then v) " " (accept else v) ")"))
@@ -60,5 +60,5 @@
   "Performs serialization of the AST into a textual representation.
   Returns a string."
   (let [visitor (formatter-visitor.)
-        format (fn [n] (accept n visitor))]
+        format (fn [n]  (accept n visitor))]
     (s/join "\n" (conj (mapv format defs) (format e)))))

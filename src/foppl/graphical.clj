@@ -3,29 +3,32 @@
   a graphical model representation of a FOPPL program given a desugared
   AST data structure."
   (:require [clojure.set :as set])
+  (:require [clojure.string :as s])
   (:require [foppl.ast :as ast :refer [accept]])
   (:import [foppl.ast constant variable fn-application definition local-binding foreach loops if-cond sample observe program])
+  (:require [foppl.formatter :as formatter])
+  (:import [foppl.formatter formatter-visitor])
   (:require [foppl.utils :as utils]))
 
 ;; lists all of the known/expected distribution function supported by FOPPL.
 ;; This list of distributionns was extracted from those supported by Anglican,
 ;; on which this implementation depends.
 (def ^:private distributions
-  ['bernoulli
-   'beta
-   'binomial
-   'categorical
-   'dirichlet
-   'discrete
-   'exponential
-   'flip
-   'gamma
-   'normal
-   'poisson
-   'uniform-continuous
-   'uniform-discrete
-   'wishart
-   ])
+  #{'bernoulli
+    'beta
+    'binomial
+    'categorical
+    'dirichlet
+    'discrete
+    'exponential
+    'flip
+    'gamma
+    'normal
+    'poisson
+    'uniform-continuous
+    'uniform-discrete
+    'wishart
+    })
 
 ;; represents a graph, where:
 ;;     - V is the set of vertices (random variables) of the graph
@@ -50,7 +53,7 @@
         edges (map :A graphs)
         probabilities (map :P graphs)
         observations (map :Y graphs)]
-    (G. (set/union vertices) (set/union edges) (merge probabilities) (merge observations))))
+    (G. (apply set/union vertices) (apply set/union edges) (apply merge probabilities) (apply merge observations))))
 
 (defn- accept-coll [coll v]
   "Given a collection of AST nodes and a node visitor, this function will apply
@@ -248,6 +251,48 @@
   (let [visitor (graphical-model-backend. rho control-flow)]
     (accept n visitor)))
 
+(defn- accept-user-defined [name args {rho :rho :as v}]
+  "Given a user-defined function with a given 'name' and arguments 'args',
+  this will calculate the corresponding graphical model. First, every formal
+  parameter is substituted by the arguments passed, and then a graphical model
+  is generated based on the resulting expression."
+  (let [ ;; construct a hash-map indexing <function name> -> <AST node>
+        indexed (map (fn [f] {(:name f) f}) rho)
+
+        ;; get the AST node corresponding to the user-defined function being applied
+        proc (get indexed name)
+        e (:e proc)
+
+        ;; list of formal parameters of the user-defined function
+        bound-names (:args proc)
+
+        ;; builds an index of <formal parameter> -> <index in 'args'>
+        args-indices (reduce merge {} (map-indexed (fn [i, name] {name i}) args))
+
+        ;; given a parameter name, this function will return the expression given
+        ;; in 'args' for it, allowing formal parameters to be substituted by the
+        ;; actual parameters given (as 'args' to this function)
+        expression-for (fn [name] (nth args (get args-indices name)))
+
+        ;; the target expression from which a graphical model is going to be
+        ;; extracted is reduced from the list of formal parameters, by
+        ;; successively performing substituion
+        target-e (reduce (fn [reduced, name] (substitute name (expression-for name) reduced)) e bound-names)]
+
+    ;; generate graphical model for the target expression with every parameter
+    ;; substituted
+    (accept target-e v)))
+
+(defn- to-str [e]
+  "Returns a string corresponding to a textual representation of an AST"
+  (let [visitor (formatter/formatter-visitor.)]
+    (accept e visitor)))
+
+(defn- to-str-coll [coll]
+  "Returns a string containing the textual representation of a collection of
+  AST nodes, joined by a blank space."
+  (s/join " " (map to-str coll)))
+
 (extend-type graphical-model-backend
   ast/visitor
 
@@ -300,7 +345,7 @@
       (model. (merge-graphs graph-1 graph-2) deterministic-e2)))
 
   (visit-if-cond [{phi :phi :as v} {predicate :predicate then :then else :else}]
-    (let [;; first, recursively translate the predicate to a model with a graph and
+    (let [ ;; first, recursively translate the predicate to a model with a graph and
           ;; a resulting deterministic expression
           g1 (accept predicate v)
           deterministic-predicate (:E g1)
@@ -328,17 +373,40 @@
       ;; their deterministic counterparts
       (model. (merge-graphs graph-1 graph-2 graph-3) (ast/if-cond. deterministic-predicate deterministic-then deterministic-else))))
 
-  (visit-fn-application [{env :environment :as v} {name :name args :args}]
-    )
+  (visit-fn-application [{rho :rho :as v} {name :name args :args}]
+    (let [ ;; construct graphical models for each of the arguments passed to the
+          ;; function recursively
+          args-gs (accept-coll args v)
+          args-graphs (map :G args-gs)
+          deterministic-args (map :E args-gs)
+
+          ;; find all names given to user-defined procedures in this FOPPL program
+          defined-names (set (map :name rho))
+          user-defined? (contains? defined-names name)
+
+          ;; if a program was user-defined, perform variable substitution for each
+          ;; argument in the procedure's expression, and then compute the resulting
+          ;; graphical model on that target expression. Otherwise, the function is
+          ;; a language 'builtin' and should be uninterpreted
+          {g :G e :E} (if user-defined?
+                        (accept-user-defined name deterministic-args v)
+                        (model. (empty-graph) (ast/fn-application. name deterministic-args)))
+
+          ;; the resulting graph is the result of merging the graphs of
+          ;; every argument passed to the function
+          resulting-graph (apply merge-graphs (cons g args-graphs))]
+
+      ;; the model returned contains the expression that is equivalent to a
+      ;; user defined procedure, or a 'builtin' function application
+      (model. resulting-graph e)))
 
   (visit-sample [v {dist :dist}]
-    (let [;; step one: generate a graph + deterministic expression for the
+    (let [ ;; step one: generate a graph + deterministic expression for the
           ;; distribution expression
           graphical-dist (accept dist v)
           graph (:G graphical-dist)
 
-          ;; destructure the graph obtained in each of its
-          ;; constituents
+          ;; destructure the graph obtained in each of its constituents
           deterministic-dist (:E graphical-dist)
           V (:V graph)
           A (:A graph)
@@ -354,7 +422,7 @@
 
           ;; find the probability density function of the distribution
           ;; being sampled, given by the SCORE function
-          pdf (score deterministic-dist random-v)
+          pdf (score deterministic-dist (ast/variable. random-v))
 
           ;; for each of the free variables in the distribution,
           ;; create an edge between it and the fresh variable representing
@@ -371,7 +439,7 @@
       (model. result-graph (ast/variable. random-v))))
 
   (visit-observe [{phi :phi :as v} {dist :dist val :val}]
-    (let [;; first step: recursively determine the graph and deterministic expression
+    (let [ ;; first step: recursively determine the graph and deterministic expression
           ;; corresponding to the distribution of the observation
           g1 (accept dist v)
           graph-1 (:G g1)
@@ -396,7 +464,7 @@
 
           ;; make sure the distribution expression is indeed of a distribution type
           ;; by calculating its score (which will panic in case it is not)
-          f1 (score e1 random-v)
+          f1 (score e1 (ast/variable. random-v))
 
           ;; make sure the density function takes into account the control flow
           ;; predicate phi
@@ -426,5 +494,25 @@
 
 
 (defn perform [{defs :defs e :e}]
-  (let [visitor (graphical-model-backend. defs true)]
-    (accept e visitor)))
+  (let [ ;; generate the model for the language's target expression e
+        visitor (graphical-model-backend. defs true)
+        model (accept e visitor)
+        graph (:G model)
+
+        ;; format the PDFs for each random variable, as well as the observed
+        ;; values into a textual representation for ease of understanding
+        format-map (fn [m] (into {} (map (fn [[random-v e]] [random-v (to-str e)]) m)))
+        formatted-pdfs (format-map (:P graph))
+        formatted-observations (format-map (:Y graph))
+
+        ;; format the program's final deterministic expression too
+        E (:E model)
+        final-e (to-str E)]
+
+    ;; convert the graphical model to a Clojure hash-map for ease of manipulation
+    {:V (:V graph)
+     :A (:A graph)
+     :P formatted-pdfs
+     :Y formatted-observations
+     :E final-e
+     }))
