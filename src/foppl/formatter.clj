@@ -47,7 +47,7 @@
     (str "(if " (accept predicate v) " " (accept then v) " " (accept else v) ")"))
 
   (visit-fn-application [v {name :name args :args}]
-    (str "(" name " " (accept-coll args v) ")"))
+    (str "(" name (if (empty? args) "" " ") (accept-coll args v) ")"))
 
   (visit-sample [v {dist :dist}]
     (str "(sample " (accept dist v) ")"))

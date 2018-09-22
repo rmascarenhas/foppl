@@ -92,10 +92,11 @@
     (ast/definition. name args (accept e v)))
 
   (visit-local-binding [v {bindings :bindings es :es}]
-    {:pre [(even? (count bindings)) (> (count bindings) 0) (> (count es) 0)]}
+    {:pre [(even? (count bindings)) (> (count es) 0)]}
 
     (let [pairs (partition 2 bindings)
           bound (count pairs)
+          is-empty (empty? pairs)
 
           ;; first name-value pair of in the local binding
           first-bind (first pairs)
@@ -104,12 +105,20 @@
           ;; the first name. Only this pair needs to be traversed at this point
           ;; since, if this local binding binds more than one name, a recursive
           ;; call will call this function in the subsequent bindings.
-          first-expanded [(first first-bind) (accept (last first-bind) v)]
+          first-expanded (when-not is-empty [(first first-bind) (accept (last first-bind) v)])
 
           rest-binds (rest (rest bindings))
           num-es (count es)
           variable (fn [name] (ast/variable. name))]
       (cond
+        ;; on an empty 'let' expression (most often result of a 'foreach' construct without
+        ;; any bound names), behavior depends on the number of expressions that follow.
+        ;; 'let [] e' is translated to e; whereas 'let [] e1 e2' is translated to
+        ;; 'let [_ e1] e2'
+        (= bound 0) (cond
+                      (= num-es 1) (accept (first es) v)
+                      (> num-es 1) (accept (ast/local-binding. [(variable '_) (accept (first es) v)] (rest es)) v))
+
         ;; if there is only one bound name, the bindings are going to remain the same,
         ;; but the enclosed expressions may have to change to extra 'let' bindings
         ;; (binding the symbol "_") to the remaining expressions when there is

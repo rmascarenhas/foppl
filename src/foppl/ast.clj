@@ -126,8 +126,7 @@
   {:pre [(>= (count context) 2) ;; context: constant c, bindings and expressions
          (number? (first context)) ;; number of iterations needs to be a constant
          (vector? (second context)) ;; bindings are given in a vector form
-         (even? (count (second context))) ;; there needs to be an even number of elements in the bindings
-         (> (count (second context)) 0)]} ;; bindings vector should have length greater than zero.
+         (even? (count (second context)))]} ;; there needs to be an even number of elements in the bindings
   "Sugared language construct to allow easy iteration over collections"
 
   (let [c (first context)

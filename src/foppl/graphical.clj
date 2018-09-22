@@ -30,6 +30,16 @@
     'wishart
     })
 
+(defn- to-str [e]
+  "Returns a string corresponding to a textual representation of an AST"
+  (let [visitor (formatter/formatter-visitor.)]
+    (accept e visitor)))
+
+(defn- to-str-coll [coll]
+  "Returns a string containing the textual representation of a collection of
+  AST nodes, joined by a blank space."
+  (s/join " " (map to-str coll)))
+
 ;; represents a graph, where:
 ;;     - V is the set of vertices (random variables) of the graph
 ;;     - A is the set of edges and is a subset of V x V
@@ -257,17 +267,17 @@
   parameter is substituted by the arguments passed, and then a graphical model
   is generated based on the resulting expression."
   (let [ ;; construct a hash-map indexing <function name> -> <AST node>
-        indexed (map (fn [f] {(:name f) f}) rho)
+        indexed (reduce merge {} (map (fn [f] {(:name f) f}) rho))
 
         ;; get the AST node corresponding to the user-defined function being applied
         proc (get indexed name)
         e (:e proc)
 
         ;; list of formal parameters of the user-defined function
-        bound-names (:args proc)
+        bound-names (map :name (:args proc))
 
         ;; builds an index of <formal parameter> -> <index in 'args'>
-        args-indices (reduce merge {} (map-indexed (fn [i, name] {name i}) args))
+        args-indices (reduce merge {} (map-indexed (fn [i, name] {name i}) bound-names))
 
         ;; given a parameter name, this function will return the expression given
         ;; in 'args' for it, allowing formal parameters to be substituted by the
@@ -282,16 +292,6 @@
     ;; generate graphical model for the target expression with every parameter
     ;; substituted
     (accept target-e v)))
-
-(defn- to-str [e]
-  "Returns a string corresponding to a textual representation of an AST"
-  (let [visitor (formatter/formatter-visitor.)]
-    (accept e visitor)))
-
-(defn- to-str-coll [coll]
-  "Returns a string containing the textual representation of a collection of
-  AST nodes, joined by a blank space."
-  (s/join " " (map to-str coll)))
 
 (extend-type graphical-model-backend
   ast/visitor

@@ -31,7 +31,8 @@
    'get
    'put
    'set
-   'range])
+   'range
+   'exp])
 
 (def ^:private distributions
   ['normal
@@ -39,6 +40,8 @@
    'uniform-continuous
    'beta
    'bernoulli
+   'gamma
+   'dirichlet
    'flip])
 
 ;; built-ins provided by FOPPL: some functions inherited from the host
