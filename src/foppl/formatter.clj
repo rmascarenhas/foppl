@@ -2,6 +2,7 @@
   "Formats the AST back into a textual representation."
   (:require [foppl.ast :as ast :refer [accept]])
   (:import [foppl.ast fn-application definition local-binding if-cond sample observe program])
+  (:require [foppl.utils :as utils])
   (:require [clojure.string :as s]))
 
 ;; The formattter visitor traverses the AST and produces a textual representation of
@@ -23,7 +24,9 @@
   ast/visitor
 
   (visit-constant [_ {c :n}]
-    (str c))
+    (cond
+      (string? c) (str "\"" c "\"")
+      :else (str c)))
 
   (visit-variable [_ {name :name}]
     (str name))

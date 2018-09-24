@@ -10,7 +10,7 @@
 ;; an expression
 (defrecord program [defs e])
 
-;; a FOPPL constant -- always numerical
+;; a FOPPL constant -- could be numerical, string, boolean, a distrbution, etc.
 (defrecord constant [n])
 
 ;; a FOPPL variable
@@ -192,13 +192,16 @@
 (defn- to-tree [sexp]
   "Given an S-expression, this function will identify the type of the expression,
   and parse deeply nested expressions recursively"
-  (cond
-    (number? sexp) (handle-constant sexp)
-    (vector? sexp) (handle-vector sexp)
-    (map? sexp) (handle-map sexp)
-    (symbol? sexp) (handle-variable sexp)
-    (list? sexp) (handle-list sexp)
-    :else (invalid-foppl sexp)))
+  (let [boolean? (fn [b] (or (= b false) (= b true)))]
+    (cond
+      (number? sexp) (handle-constant sexp)
+      (string? sexp) (handle-constant sexp)
+      (boolean? sexp) (handle-constant sexp)
+      (vector? sexp) (handle-vector sexp)
+      (map? sexp) (handle-map sexp)
+      (symbol? sexp) (handle-variable sexp)
+      (list? sexp) (handle-list sexp)
+      :else (invalid-foppl sexp))))
 
 (defn- to-program [[e & defs]]
   "Creates a program record for the FOPPL program that consists of the

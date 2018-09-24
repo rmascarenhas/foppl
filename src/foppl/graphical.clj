@@ -5,9 +5,11 @@
   (:require [clojure.set :as set])
   (:require [clojure.string :as s])
   (:require [foppl.ast :as ast :refer [accept]])
-  (:import [foppl.ast constant variable fn-application definition local-binding foreach loops if-cond sample observe program])
+  (:import [foppl.ast constant variable literal-vector literal-map fn-application definition
+            local-binding foreach loops if-cond sample observe program])
   (:require [foppl.formatter :as formatter])
   (:import [foppl.formatter formatter-visitor])
+  (:require [foppl.eval :as eval])
   (:require [foppl.utils :as utils]))
 
 ;; lists all of the known/expected distribution function supported by FOPPL.
@@ -78,11 +80,11 @@
 (extend-type substitution-visitor
   ast/visitor
 
-  (visit-literal-vector [_ _]
-    (utils/ice "literal vectors should have been desugared during codegen"))
+  (visit-literal-vector [v {es :es}]
+    (ast/literal-vector. (accept-coll es v)))
 
-  (visit-literal-map [_ _]
-    (utils/ice "literal maps should have been desugared during codegen"))
+  (visit-literal-map [v {es :es}]
+    (ast/literal-map. (accept-coll es v)))
 
   (visit-foreach [_ _]
     (utils/ice "foreach constructs should have been desugared during codegen"))
@@ -191,6 +193,13 @@
   (let [visitor (fv-visitor. #{})]
     (accept e visitor)))
 
+(defn- peval [e]
+  "Performs partial evaluation of expression e. If the expression has free
+  variables, no partial evaluation happens and the expression is returned unchanged."
+  (if (empty? (fv e))
+    (eval/peval e)
+    e))
+
 ;; The score visitor returns an AST node that corresponds to the SCORE function
 ;; (as described in the book) for a certain AST node. Score functions are based
 ;; on a random variable generated when sampling or observing a distribution.
@@ -211,8 +220,11 @@
   (visit-loop [_ _]
     (utils/ice "loop constructs should have been desugared during expression scoring"))
 
-  (visit-constant [_ _]
-    (utils/foppl-error "Not a distribution object: Score(E, v) = ⊥"))
+  (visit-constant [{random-v :random-v} {c :n :as constant}]
+    (let [distribution (re-matches #".*anglican.runtime.(.*)-distribution" (str (class c)))]
+      (if distribution
+        (ast/fn-application. 'observe* [constant random-v])
+        (utils/foppl-error "Not a distribution object: Score(E, v) = ⊥"))))
 
   (visit-variable [_ _]
     (utils/foppl-error "Not a distribution object: Score(E, v) = ⊥"))
@@ -296,11 +308,11 @@
 (extend-type graphical-model-backend
   ast/visitor
 
-  (visit-literal-vector [_ _]
-    (utils/ice "literal vectors should have been desugared during codegen"))
+  (visit-literal-vector [_ literal-vector]
+    (model. (empty-graph) literal-vector))
 
-  (visit-literal-map [_ _]
-    (utils/ice "literal maps should have been desugared during codegen"))
+  (visit-literal-map [_ literal-map]
+    (model. (empty-graph) literal-map))
 
   (visit-foreach [_ _]
     (utils/ice "foreach constructs should have been desugared during codegen"))
@@ -352,26 +364,31 @@
           graph-1 (:G g1)
 
           ;; to translate the 'then' clause of the if expression, we need
-          ;; to conjoin phi with the deterministic predicate, and recursively
-          ;; visit that expression
-          then-control-flow (if (= phi true) deterministic-predicate (ast/fn-application. 'and [phi deterministic-predicate]))
+          ;; to conjoin phi with the deterministic predicate, partially evaluate it,
+          ;; and recursively visit that expression
+          then-control-flow-e (if (= phi true) deterministic-predicate (ast/fn-application. 'and [phi deterministic-predicate]))
+          then-control-flow (peval then-control-flow-e)
           g2 (accept-with-control-flow then-control-flow then v)
           deterministic-then (:E g2)
           graph-2 (:G g2)
 
           ;; similarly, to translate the 'else' clase of the if expression, we need
-          ;; to conjoin phi with the negation of the deterministic predicate and
-          ;; recursively visit that expression
-          not-predicate (ast/fn-application. 'not deterministic-predicate)
-          else-control-flow (if (= phi true) not-predicate (ast/fn-application. 'and [phi not-predicate]))
+          ;; to conjoin phi with the negation of the deterministic predicate, partially
+          ;; evaluate it, and recursively visit that expression
+          not-predicate (ast/fn-application. 'not [deterministic-predicate])
+          else-control-flow-e (if (= phi true) not-predicate (ast/fn-application. 'and [phi not-predicate]))
+          else-control-flow (peval else-control-flow-e)
           g3 (accept-with-control-flow else-control-flow else v)
           deterministic-else (:E g3)
-          graph-3 (:G g3)]
+          graph-3 (:G g3)
 
-      ;; finally, the resulting model is the merge of all graphs generated above, with deterministic
-      ;; expressinon represented by an if expression where each of e1, e2, e3 are replaced by
-      ;; their deterministic counterparts
-      (model. (merge-graphs graph-1 graph-2 graph-3) (ast/if-cond. deterministic-predicate deterministic-then deterministic-else))))
+          ;; the resulting expression is represented by an if expression where each of e1, e2, e3
+          ;; are replaced by their deterministic counterpars (and partially evaluated)
+          resulting-if-e (ast/if-cond. deterministic-predicate deterministic-then deterministic-else)
+          resulting-if (peval resulting-if-e)]
+
+      ;; finally, the resulting model merges of all graphs generated above
+      (model. (merge-graphs graph-1 graph-2 graph-3) resulting-if)))
 
   (visit-fn-application [{rho :rho :as v} {name :name args :args}]
     (let [ ;; construct graphical models for each of the arguments passed to the
@@ -390,7 +407,7 @@
           ;; a language 'builtin' and should be uninterpreted
           {g :G e :E} (if user-defined?
                         (accept-user-defined name deterministic-args v)
-                        (model. (empty-graph) (ast/fn-application. name deterministic-args)))
+                        (model. (empty-graph) (peval (ast/fn-application. name deterministic-args))))
 
           ;; the resulting graph is the result of merging the graphs of
           ;; every argument passed to the function
