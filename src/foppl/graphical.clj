@@ -7,8 +7,6 @@
   (:require [foppl.ast :as ast :refer [accept]])
   (:import [foppl.ast constant variable literal-vector literal-map fn-application definition
             local-binding foreach loops if-cond sample observe program])
-  (:require [foppl.formatter :as formatter])
-  (:import [foppl.formatter formatter-visitor])
   (:require [foppl.eval :as eval])
   (:require [foppl.utils :as utils]))
 
@@ -31,16 +29,6 @@
     'uniform-discrete
     'wishart
     })
-
-(defn- to-str [e]
-  "Returns a string corresponding to a textual representation of an AST"
-  (let [visitor (formatter/formatter-visitor.)]
-    (accept e visitor)))
-
-(defn- to-str-coll [coll]
-  "Returns a string containing the textual representation of a collection of
-  AST nodes, joined by a blank space."
-  (s/join " " (map to-str coll)))
 
 ;; represents a graph, where:
 ;;     - V is the set of vertices (random variables) of the graph
@@ -506,27 +494,6 @@
       (model. resulting-graph e2)))
   )
 
-
 (defn perform [{defs :defs e :e}]
-  (let [ ;; generate the model for the language's target expression e
-        visitor (graphical-model-backend. defs true)
-        model (accept e visitor)
-        graph (:G model)
-
-        ;; format the PDFs for each random variable, as well as the observed
-        ;; values into a textual representation for ease of understanding
-        format-map (fn [m] (into {} (map (fn [[random-v e]] [random-v (to-str e)]) m)))
-        formatted-pdfs (format-map (:P graph))
-        formatted-observations (format-map (:Y graph))
-
-        ;; format the program's final deterministic expression too
-        E (:E model)
-        final-e (to-str E)]
-
-    ;; convert the graphical model to a Clojure hash-map for ease of manipulation
-    {:V (:V graph)
-     :A (:A graph)
-     :P formatted-pdfs
-     :Y formatted-observations
-     :E final-e
-     }))
+  (let [visitor (graphical-model-backend. defs true)]
+    (accept e visitor)))

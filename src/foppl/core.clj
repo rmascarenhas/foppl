@@ -7,6 +7,7 @@
   (:require [foppl.scope :as scope])
   (:require [foppl.desugar :as desugar])
   (:require [foppl.graphical :as graphical])
+  (:require [foppl.operations :as operations])
   (:gen-class))
 
 (def ^:private me "foppl")
@@ -56,7 +57,7 @@
           desugar/perform
           scope/perform
           graphical/perform
-          println)
+          operations/print-graph)
       (catch clojure.lang.ExceptionInfo e
         (let [type (-> e ex-data :type)
               msg (-> (.getMessage e))]
