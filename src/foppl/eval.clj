@@ -9,6 +9,7 @@
   (:import [foppl.ast constant fn-application])
   (:require [foppl.formatter :as formatter])
   (:import [foppl.formatter formatter-visitor])
+  (:require [foppl.primitives])
   (:require [foppl.utils :as utils]))
 
 ;; defines a map from function name -> function object for every function
@@ -16,11 +17,13 @@
 ;; for details of when functions can actually be applied from the context
 ;; of a FOPPL program
 (def ^:private builtins-registry
-  (merge (ns-map 'clojure.core) (ns-map 'anglican.runtime)))
+  (merge (ns-map 'clojure.core) (ns-map 'anglican.runtime) (ns-map 'foppl.primitives)))
 
 ;; do not allow the evaluation of these functions in a FOPPL context
 (def ^:private forbidden-core-functions
-  #{'binding 'eval 'loop})
+  '#{binding eval loop map reduce filter keep keep-indexed
+     remove repeatedly every? not-any? some every-pred some-fn
+     comp juxt partial})
 
 (defn- valid-fn? [f]
   {:pre [(string? f)]}
@@ -142,11 +145,10 @@
         :else if-cond)))
 
   (visit-fn-application [v {name :name args :args :as fn-application}]
-    (let [valid? (valid-fn? (str name))
-
-          ;; apart from being valid, a function definition needs to be resolvable --
+    (let [;; apart from being valid, a function definition needs to be resolvable --
           ;; i.e., exist in the builtins registry
           builtin (get builtins-registry name)
+          valid? (and (valid-fn? (str name)) (fn? builtin))
 
           ;; extract raw Clojure datatypes for the constant values used as arguments
           ;; to this function application
