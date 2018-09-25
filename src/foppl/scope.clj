@@ -135,7 +135,7 @@
 
   (visit-fn-application [{env :environment :as v} {name :name args :args}]
     (let [validate-fn (fn [name, v]
-                        (if (or (resolved? env name) (contains? eval/all-functions name))
+                        (if (or (resolved? env name) (contains? eval/all-builtins name))
                           v
                           (utils/warning (str "Undefined function: " name))))]
       (->> v

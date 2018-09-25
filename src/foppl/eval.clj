@@ -148,7 +148,7 @@
     (let [;; apart from being valid, a function definition needs to be resolvable --
           ;; i.e., exist in the builtins registry
           builtin (get builtins-registry name)
-          valid? (and (valid-fn? (str name)) (fn? builtin))
+          valid? (and (valid-fn? (str name)) (fn? (var-get builtin)))
 
           ;; extract raw Clojure datatypes for the constant values used as arguments
           ;; to this function application
@@ -183,7 +183,7 @@
     observe)
   )
 
-(def ^:const all-functions
+(def ^:const all-builtins
   "Set of all language builtins. Includes every function defined in clojure.core
   and anglican.runtime (plus extra definitions for martrix operations)."
   (let [fns (keys builtins-registry)
