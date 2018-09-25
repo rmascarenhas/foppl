@@ -4,52 +4,8 @@
   bound) as well as every function application is resolved to a
   known function. Traverses the AST but never performs any mutation."
   (:require [foppl.ast :as ast :refer [accept]])
-  (:require [foppl.utils :as utils]))
-
-;; ================================================================ ;;
-;;                             BUILT-INS                            ;;
-;; ================================================================ ;;
-
-(def ^:private builtin-functions
-  ['+
-   '-
-   '*
-   '/
-   '=
-   'abs
-   'first
-   'second
-   'last
-   'rest
-   'last
-   'nth
-   'conj
-   'peek
-   'cons
-   'vector
-   'hash-map
-   'append
-   'get
-   'put
-   'set
-   'range
-   'exp])
-
-(def ^:private distributions
-  ['normal
-   'discrete
-   'uniform-continuous
-   'beta
-   'bernoulli
-   'gamma
-   'dirichlet
-   'flip])
-
-;; built-ins provided by FOPPL: some functions inherited from the host
-;; (Clojure), sample/observe, as well as a slate of distribution
-;; functions
-(def ^:private builtins
-  (set (concat builtin-functions distributions)))
+  (:require [foppl.utils :as utils])
+  (:require [foppl.eval :as eval]))
 
 ;; ================================================================ ;;
 ;;                          ENVIRONMENTS                            ;;
@@ -179,7 +135,7 @@
 
   (visit-fn-application [{env :environment :as v} {name :name args :args}]
     (let [validate-fn (fn [name, v]
-                        (if (or (resolved? env name) (contains? builtins name))
+                        (if (or (resolved? env name) (contains? eval/all-functions name))
                           v
                           (utils/foppl-error (str "Undefined function: " name))))]
       (->> v

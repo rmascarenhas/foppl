@@ -7,8 +7,8 @@
   (:require [anglican.runtime])
   (:require [foppl.ast :as ast :refer [accept]])
   (:import [foppl.ast constant fn-application])
-  (:import [foppl.formatter formatter-visitor])
-  (:require [foppl.formatter :as formatter]))
+  (:require [foppl.formatter :as formatter])
+  (:import [foppl.formatter formatter-visitor]))
 
 ;; do not allow the evaluation of these functions in a FOPPL context
 (def ^:private forbidden-core-functions
@@ -177,6 +177,12 @@
   (visit-observe [_ observe]
     observe)
   )
+
+(def ^:const all-functions
+  (let [sandbox-map (eval-str "(ns-map (ns-name *ns*))")
+        fns (keys sandbox-map)
+        valid-fns (map symbol (filter valid-fn? (map str fns)))]
+    (set valid-fns)))
 
 (defn peval [e]
   "Performs partial evaluation of an expression (AST node 'e'). Returns
