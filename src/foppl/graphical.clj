@@ -155,8 +155,12 @@
   (visit-loop [_ _]
     (utils/ice "loop constructs should have been desugared during free-variable visit"))
 
-  (visit-constant [_ c]
-    #{})
+  (visit-constant [_ {c :n}]
+    ;; if the constant is a symbol (name of an random variable generated
+    ;; by previous partial evaluation, add that to the set of free variables.
+    (if (symbol? c)
+      #{c}
+      #{}))
 
   (visit-variable [{bound :bound} {name :name}]
     (if (contains? bound name)
@@ -192,13 +196,6 @@
   "Returns a set of free variables contained in expression 'e'"
   (let [visitor (fv-visitor. #{})]
     (accept e visitor)))
-
-(defn- peval [e]
-  "Performs partial evaluation of expression e. If the expression has free
-  variables, no partial evaluation happens and the expression is returned unchanged."
-  (if (empty? (fv e))
-    (eval/peval e)
-    e))
 
 ;; The score visitor returns an AST node that corresponds to the SCORE function
 ;; (as described in the book) for a certain AST node. Score functions are based
@@ -367,7 +364,7 @@
           ;; to conjoin phi with the deterministic predicate, partially evaluate it,
           ;; and recursively visit that expression
           then-control-flow-e (if (= phi true) deterministic-predicate (ast/fn-application. 'and [phi deterministic-predicate]))
-          then-control-flow (peval then-control-flow-e)
+          then-control-flow (eval/peval then-control-flow-e)
           g2 (accept-with-control-flow then-control-flow then v)
           deterministic-then (:E g2)
           graph-2 (:G g2)
@@ -377,7 +374,7 @@
           ;; evaluate it, and recursively visit that expression
           not-predicate (ast/fn-application. 'not [deterministic-predicate])
           else-control-flow-e (if (= phi true) not-predicate (ast/fn-application. 'and [phi not-predicate]))
-          else-control-flow (peval else-control-flow-e)
+          else-control-flow (eval/peval else-control-flow-e)
           g3 (accept-with-control-flow else-control-flow else v)
           deterministic-else (:E g3)
           graph-3 (:G g3)
@@ -385,7 +382,7 @@
           ;; the resulting expression is represented by an if expression where each of e1, e2, e3
           ;; are replaced by their deterministic counterpars (and partially evaluated)
           resulting-if-e (ast/if-cond. deterministic-predicate deterministic-then deterministic-else)
-          resulting-if (peval resulting-if-e)]
+          resulting-if (eval/peval resulting-if-e)]
 
       ;; finally, the resulting model merges of all graphs generated above
       (model. (merge-graphs graph-1 graph-2 graph-3) resulting-if)))
@@ -407,7 +404,7 @@
           ;; a language 'builtin' and should be uninterpreted
           {g :G e :E} (if user-defined?
                         (accept-user-defined name deterministic-args v)
-                        (model. (empty-graph) (peval (ast/fn-application. name deterministic-args))))
+                        (model. (empty-graph) (eval/peval (ast/fn-application. name deterministic-args))))
 
           ;; the resulting graph is the result of merging the graphs of
           ;; every argument passed to the function

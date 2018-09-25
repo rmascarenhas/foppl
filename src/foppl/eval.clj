@@ -52,38 +52,38 @@
   (visit-constant [_ {c :n}]
     c)
 
-  (visit-variable [_ _]
-    (utils/ice "Variables have no raw value"))
+  (visit-variable [_ {name :name}]
+    name)
 
   (visit-literal-vector [_ _]
-    (utils/ice "Literal vectors have no raw value"))
+    nil)
 
   (visit-literal-map [_ _]
-    (utils/ice "Literal maps have no raw value"))
+    nil)
 
   (visit-definition [_ _]
-    (utils/ice "Definitions have no raw value"))
+    nil)
 
   (visit-local-binding [_ _]
-    (utils/ice "Local bindings have no raw value"))
+    nil)
 
   (visit-foreach [_ _]
-    (utils/ice "foreach have no raw values"))
+    nil)
 
   (visit-loop [_ _]
-    (utils/ice "Loops have no raw value"))
+    nil)
 
   (visit-if-cond [_ _]
-    (utils/ice "if expressions have no raw values"))
+    nil)
 
-  (visit-fn-application [_ _]
-    (utils/ice "function applications have no raw values"))
+  (visit-fn-application [_ fn-application]
+    nil)
 
   (visit-sample [_ _]
-    (utils/ice "Samples have no raw values"))
+    nil)
 
   (visit-observe [_ _]
-    (utils/ice "Observations have no raw values"))
+    nil)
   )
 
 (defn- raw-constants [coll]
@@ -136,7 +136,25 @@
           ;; apart from being valid, a function definition needs to be resolvable --
           ;; i.e., exist in the builtins registry
           builtin (get builtins-registry name)
-          resolved? (and valid? builtin)]
+
+          ;; extract raw Clojure datatypes for the constant values used as arguments
+          ;; to this function application
+          raw-arguments (raw-constants args)
+
+          ;; unfortunately, the evaluation rules require that `get` and `nth` only
+          ;; partially evaluate if the last argument is a numerical constant.
+          ;; This validates this special case
+          valid-data-structure-args? (cond
+                                       (or (= name 'get) (= name 'nth)) (number? (last raw-arguments))
+                                       :else true)
+
+          ;; If one of the arguments to the function cannot be represented
+          ;; as a raw Clojure datatype, do not attempt to partially evaluate
+          ;; this function
+          valid-args? (and valid-data-structure-args? (every? (comp not nil?) raw-arguments))
+
+          ;; if the function is resolved, it can be safely evaluated
+          resolved? (and valid? builtin valid-args?)]
 
       ;; if the function is resolved, return an AST node for a constant
       ;; holding the result of the evaluation. Otherwise, leave the
