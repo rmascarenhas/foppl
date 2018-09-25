@@ -24,6 +24,7 @@
    'last
    'nth
    'conj
+   'peek
    'cons
    'vector
    'hash-map

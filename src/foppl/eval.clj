@@ -6,7 +6,7 @@
   (:require [clojure.string :as s])
   (:require [anglican.runtime])
   (:require [foppl.ast :as ast :refer [accept]])
-  (:import [foppl.ast constant])
+  (:import [foppl.ast constant fn-application])
   (:import [foppl.formatter formatter-visitor])
   (:require [foppl.formatter :as formatter]))
 
@@ -54,6 +54,59 @@
         (in-ns (ns-name previous-ns))
         (remove-ns eval-ns-name)))))
 
+;; the wrapping visitor makes sure that AST nodes holding constant list values
+;; are wrapped to (list ...) function calls. This makes list results generated
+;; by partial evaluation of expressions to be reusable in the evaluation of
+;; other expressions during the compilation pipeline.
+(defrecord wrap-visitor [])
+
+(extend-type wrap-visitor
+  ast/visitor
+
+  (visit-constant [_ {c :n :as constant}]
+    (if (or (list? c) (chunked-seq? c))
+      (ast/fn-application. 'list (map (fn [n] (ast/constant. n)) c))
+      constant))
+
+  (visit-variable [_ var]
+    var)
+
+  (visit-literal-vector [_ literal-vector]
+    literal-vector)
+
+  (visit-literal-map [_ literal-map]
+    literal-map)
+
+  (visit-definition [_ definition]
+    definition)
+
+  (visit-local-binding [_ local-binding]
+    local-binding)
+
+  (visit-foreach [_ foreach]
+    foreach)
+
+  (visit-loop [_ loop]
+    loop)
+
+  (visit-if-cond [_ if-cond]
+    if-cond)
+
+  (visit-fn-application [_ fn-application]
+    fn-application)
+
+  (visit-sample [_ sample]
+    sample)
+
+  (visit-observe [_ observe]
+    observe)
+  )
+
+(defn- wrap-coll [coll]
+  (let [visitor (wrap-visitor.)
+        wrap (fn [n] (accept n visitor))]
+    (map wrap coll)))
+
 (defrecord eval-visitor [])
 
 (extend-type eval-visitor
@@ -93,11 +146,27 @@
         (= raw-predicate false) else
         :else if-cond)))
 
-  (visit-fn-application [v {name :name :as fn-application}]
+  (visit-fn-application [v {name :name args :args :as fn-application}]
     (let [valid? (valid-fn? (str name))
+
+          ;; apart from being valid, a function definition needs to be resolvable
+          ;; in the sandboxed namespace where evaluation happens.
           resolved? (and valid? (eval-str (str "(resolve '" name ")")))
+
+          ;; wrap arguments in (list ...) function calls. This makes sure that
+          ;; lists generated from previous partial evaluations can be used
+          ;; to generate further results
+          wrapped-args (wrap-coll args)
+          wrapped-fn (ast/fn-application. name wrapped-args)
+
+          ;; serialize the function being evaluated to a string so that
+          ;; it can be evaluated by Clojure
           formatter (formatter/formatter-visitor.)
-          sexp (accept fn-application formatter)]
+          sexp (accept wrapped-fn formatter)]
+
+      ;; if the function is resolved, return an AST node for a constant
+      ;; holding the result of the evaluation. Otherwise, leave the
+      ;; expression unchanged
       (if resolved?
         (ast/constant. (eval-str sexp))
         fn-application)))
