@@ -91,6 +91,17 @@
         raw(fn [n] (accept n visitor))]
     (map raw coll)))
 
+(defn- safe-apply [f args default]
+  "Applies function f with given `args`. If the application results in an
+  exception being thrown, `default` is returned. Useful for situations when
+  it is not possible to guarantee that partially evaluating an expression
+  is possible."
+  (try
+    (ast/constant. (apply f args))
+    (catch Exception _ default)))
+
+;; Traverses the AST and evaluates sub-expressions as possible (according to the
+;; definition of the EVAL function in the book).
 (defrecord eval-visitor [])
 
 (extend-type eval-visitor
@@ -160,7 +171,7 @@
       ;; holding the result of the evaluation. Otherwise, leave the
       ;; expression unchanged
       (if resolved?
-        (ast/constant. (apply builtin (raw-constants args)))
+        (safe-apply builtin raw-arguments fn-application)
         fn-application)))
 
   (visit-sample [_ sample]
