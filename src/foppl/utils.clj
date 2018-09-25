@@ -16,3 +16,10 @@
   invalid FOPPL program. This error should be used when validating
   the semantics of programs given to the compiler."
   (runtime-error :type :invalid-program :message msg))
+
+(defn warning [msg]
+  "Prints a warning message to the user, but does not halt execution.
+  Useful when the compiler detects a potential mistake from the user,
+  but the error is not fatal (or not provably fata)."
+  (binding [*out* *err*]
+    (println (str "[WARNING] " msg))))

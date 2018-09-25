@@ -95,7 +95,7 @@
 
   (visit-variable [{env :environment :as v} {name :name}]
     (when-not (resolved? env name)
-      (utils/foppl-error (str "Undefined variable: " name)))
+      (utils/warning (str "Undefined variable: " name)))
     v)
 
   (visit-literal-vector [_ _]
@@ -137,7 +137,7 @@
     (let [validate-fn (fn [name, v]
                         (if (or (resolved? env name) (contains? eval/all-functions name))
                           v
-                          (utils/foppl-error (str "Undefined function: " name))))]
+                          (utils/warning (str "Undefined function: " name))))]
       (->> v
            (validate-fn name)
            (accept-coll args))))
