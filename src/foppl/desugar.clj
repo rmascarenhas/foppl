@@ -180,16 +180,20 @@
   (visit-foreach [v {c :c bindings :bindings es :es}]
     (let [iters (:n c)
           pairs (partition 2 bindings)
+          desugar-pair (fn [[name e]] [name (accept e v)])
+          desugared-bindings (doall (map desugar-pair pairs))
 
           ;; builds a list of bindings for the bound names at index 'n'.
           ;; Uses the 'get' function to retrieve element at nth position
           ;; of a collection
-          build-bindings (fn [n] (mapcat (fn [[name val]] [name (ast/fn-application. 'get [val (ast/constant. n)])]) pairs))
+          get-fn (fn [n] (fn [[name val]] [name (ast/fn-application. 'get [val (ast/constant. n)])]))
+          build-bindings (fn [n] (mapcat (get-fn n) desugared-bindings))
 
           ;; creates a local binding with multiple bound names for an index 'n'.
           ;; This assumes that the let-form-desugaring process will process the
           ;; AST *after* this visitor.
-          bindings-at (fn [n] (ast/local-binding. (build-bindings n) es))]
+          desugared-es (accept-coll es v)
+          bindings-at (fn [n] (ast/local-binding. (build-bindings n) desugared-es))]
 
       (ast/fn-application. 'vector (doall (map bindings-at (range iters))))))
 

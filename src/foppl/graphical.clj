@@ -8,7 +8,13 @@
   (:import [foppl.ast constant variable literal-vector literal-map fn-application definition
             local-binding foreach loops if-cond sample observe program])
   (:require [foppl.eval :as eval])
+  (:require [foppl.formatter :as formatter])
+  (:import [foppl.formatter formatter-visitor])
   (:require [foppl.utils :as utils]))
+
+(defn- to-str [e]
+  (let [v (formatter/formatter-visitor.)]
+    (accept e v)))
 
 ;; lists all of the known/expected distribution function supported by FOPPL.
 ;; This list of distributionns was extracted from those supported by Anglican,
@@ -143,12 +149,16 @@
   (visit-loop [_ _]
     (utils/ice "loop constructs should have been desugared during free-variable visit"))
 
-  (visit-constant [_ {c :n}]
-    ;; if the constant is a symbol (name of an random variable generated
-    ;; by previous partial evaluation, add that to the set of free variables.
-    (if (symbol? c)
-      #{c}
-      #{}))
+  (visit-constant [v {c :n}]
+    (cond
+      ;; if the constant holds a collection of elements, recursively traverse
+      ;; each element of the collection treating each of them as a constant element
+      (coll? c) (apply set/union (map (fn [el] (accept (ast/constant. el) v)) c))
+
+      ;; if the constant is a symbol (name of an random variable generated
+      ;; by previous partial evaluation, add that to the set of free variables.
+      (symbol? c) #{c}
+      :else #{}))
 
   (visit-variable [{bound :bound} {name :name}]
     (if (contains? bound name)
