@@ -235,10 +235,10 @@
           f3 (accept else v)]
       (ast/if-cond. predicate f2 f3)))
 
-  (visit-fn-application [{random-v :random-v} {name :name args :args}]
+  (visit-fn-application [{random-v :random-v} {name :name args :args :as fn-application}]
     (if (contains? distributions name)
       (ast/fn-application. name (cons random-v args))
-      (utils/foppl-error (str "Unknown distribution: " name))))
+      fn-application))
 
   (visit-sample [_ _]
     (utils/foppl-error "Not a distribution object: Score(E, v) = ⊥"))
