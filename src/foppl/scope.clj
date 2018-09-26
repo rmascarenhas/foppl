@@ -137,7 +137,9 @@
     (let [validate-fn (fn [name, v]
                         (if (or (resolved? env name) (contains? eval/all-builtins name))
                           v
-                          (utils/warning (str "Undefined function: " name))))]
+                          (do
+                            (utils/warning (str "Undefined function: " name))
+                            v)))]
       (->> v
            (validate-fn name)
            (accept-coll args))))

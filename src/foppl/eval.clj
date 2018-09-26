@@ -36,7 +36,8 @@
         no-earmuffs (fn [f] (complement (s/includes? f "*")))
 
         ;; do not evaluate a set of 'forbidden' core functions
-        no-forbidden (fn [f] (complement (contains? forbidden-core-functions (symbol f))))
+        contains-forbidden (fn [f] (contains? forbidden-core-functions (symbol f)))
+        no-forbidden (comp not contains-forbidden)
 
         ;; combine all predicates above in a single checking function
         valid? (every-pred no-java-classes no-earmuffs no-forbidden)]
