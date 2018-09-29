@@ -1,36 +1,24 @@
-# foppl
+# FOPPL: A First-Order Probabilistic Programming Language
 
-FIXME: description
+This is an implementation of FOPPL, as described in [1]. Compiles programs
+to a graphical model representation. See `src/foppl/operations.clj` for the list
+of functions available on the resulting graphical model data structure.
 
-## Installation
+## Dependencies
 
-Download from http://example.com/FIXME.
+* Clojure 1.8+
+* Anglican 1.0+
 
 ## Usage
 
-FIXME: explanation
+```
+$ lein run [foppl-src]
+```
 
-    $ java -jar foppl-0.1.0-standalone.jar [args]
+By default, compiling a valid FOPPL program as above will print the resulting graphical
+model to the screen (using the `print-graph` function).
 
-## Options
 
-FIXME: listing of options this app accepts.
-
-## Examples
-
-...
-
-### Bugs
-
-...
-
-### Any Other Sections
-### That You Think
-### Might be Useful
-
-## License
-
-Copyright © 2018 FIXME
-
-Distributed under the Eclipse Public License either version 1.0 or (at
-your option) any later version.
+[1] J. W. van de Meent, B. Paige, H. Yang, and F. Wood, “Introduction to
+Probabilistic Programming,” _Foundations and Trends in Machine Learning_, pp. in
+review, 2018.
