@@ -237,7 +237,7 @@
 
   (visit-fn-application [{random-v :random-v} {name :name args :args :as fn-application}]
     (if (contains? distributions name)
-      (ast/fn-application. name (cons random-v args))
+      (ast/fn-application. 'observe* [(ast/fn-application. name args) random-v])
       fn-application))
 
   (visit-sample [_ _]
