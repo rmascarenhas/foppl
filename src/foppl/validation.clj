@@ -3,6 +3,7 @@
   the language."
   (:require [foppl.ast :as ast :refer [accept]])
   (:require [foppl.formatter :as formatter])
+  (:require [foppl.eval :as eval])
   (:import [foppl.formatter formatter-visitor])
   (:require [foppl.utils :as utils]))
 
@@ -51,6 +52,10 @@
     (defn-unexpected literal-map))
 
   (visit-definition [_ {name :name args :args e :e}]
+    ;; Warns the user if a procedure has the same name as a FOPPL builtin
+    (when (contains? eval/all-builtins name)
+      (utils/warning (str "Overwriting built-in function " name)))
+
     ;; validates that a procedure's expression does not contain
     ;; nested procedure definitions
     (accept e (is-e-visitor.)))
@@ -113,7 +118,6 @@
   (visit-loop [v {c :c e :e f :f es :es}]
     (accept c v)
     (accept e v)
-    (accept f v)
     (accept-coll es v))
 
   (visit-if-cond [v {predicate :predicate then :then else :else}]
