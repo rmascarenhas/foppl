@@ -38,13 +38,16 @@
     (str "{" (accept-coll es v) "}"))
 
   (visit-definition [v {name :name args :args e :e}]
-    (str "(defn " name " [" (accept-coll args v) "]" (accept e v) ")"))
+    (str "(defn " name " [" (accept-coll args v) "]" " " (accept e v) ")"))
 
   (visit-local-binding [v {bindings :bindings es :es}]
     (str "(let [" (accept-coll bindings v) "]" (accept-coll es v) ")"))
 
   (visit-foreach [v {c :c bindings :bindings es :es}]
     (str "(foreach " (accept c v) " [" (accept-coll bindings v) "]" (accept-coll "\n" es v) ")"))
+
+  (visit-loop [v {c :c e :e f :f es :es}]
+    (str "(loop " (accept c v) " " (accept e v) " " (accept f v) " " (accept-coll es v) ")"))
 
   (visit-if-cond [v {predicate :predicate then :then else :else}]
     (str "(if " (accept predicate v) " " (accept then v) " " (accept else v) ")"))

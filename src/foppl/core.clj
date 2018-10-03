@@ -4,6 +4,7 @@
   (:require [clojure.string :as string])
   (:require [clojure.java.io :as io])
   (:require [foppl.ast :as ast])
+  (:require [foppl.validation :as validation])
   (:require [foppl.scope :as scope])
   (:require [foppl.desugar :as desugar])
   (:require [foppl.graphical :as graphical])
@@ -54,6 +55,7 @@
     (try
       (-> stream
           ast/read-source
+          validation/perform
           desugar/perform
           scope/perform
           graphical/perform
