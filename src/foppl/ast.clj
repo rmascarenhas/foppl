@@ -112,7 +112,8 @@
   {:pre [(>= (count context) 2)
          (vector? (first context))
          (even? (count (first context)))
-         (> (count (first context)) 0)]}
+         (> (count (first context)) 0)
+         (every? symbol? (map first (partition 2 (first context))))]}
   "Introduces local binding: (let [name val name2 val2] e1 e2 ... en)"
 
   (let [pairs (partition 2 (first context))
