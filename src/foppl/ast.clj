@@ -190,20 +190,6 @@
       (= sym 'observe) (handle-observe cdr)
       :else (handle-fn-application sym cdr))))
 
-(defn- to-tree [sexp]
-  "Given an S-expression, this function will identify the type of the expression,
-  and parse deeply nested expressions recursively"
-  (let [boolean? (fn [b] (or (= b false) (= b true)))]
-    (cond
-      (number? sexp) (handle-constant sexp)
-      (string? sexp) (handle-constant sexp)
-      (boolean? sexp) (handle-constant sexp)
-      (vector? sexp) (handle-vector sexp)
-      (map? sexp) (handle-map sexp)
-      (symbol? sexp) (handle-variable sexp)
-      (list? sexp) (handle-list sexp)
-      :else (invalid-foppl sexp))))
-
 (defn- to-program [[e & defs]]
   "Creates a program record for the FOPPL program that consists of the
   expression 'e' given and the collection of definitions 'def'"
@@ -296,6 +282,20 @@
 ;; ================================================================ ;;
 ;;                       PUBLIC FUNCTIONS                           ;;
 ;; ================================================================ ;;
+
+(defn to-tree [sexp]
+  "Given an S-expression, this function will identify the type of the expression,
+  and parse deeply nested expressions recursively"
+  (let [boolean? (fn [b] (or (= b false) (= b true)))]
+    (cond
+      (number? sexp) (handle-constant sexp)
+      (string? sexp) (handle-constant sexp)
+      (boolean? sexp) (handle-constant sexp)
+      (vector? sexp) (handle-vector sexp)
+      (map? sexp) (handle-map sexp)
+      (symbol? sexp) (handle-variable sexp)
+      (list? sexp) (handle-list sexp)
+      :else (invalid-foppl sexp))))
 
 (defn fresh-sym
   "Returns an unused symbol that can be used during the compilation pipeline to stand
