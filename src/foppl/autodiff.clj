@@ -82,32 +82,58 @@
         e (last f)]
     (ast/definition. nil args (ast/to-tree e))))
 
+;; an equation is an element of the tape that is produced by
+;; traversing a function's definition and building its corresponding
+;; computational graph. An equation associates a unique name to a
+;; function application, represented by the AST node defined in
+;; `foppl.ast`. Every name in a tape is unique.
 (defrecord equation [name n])
 
-
+;; the flow-graph-visitor is responsible for traversing the definition
+;; of the function that is being differentiated. Its goal is to build
+;; a "tape" (or Wengert List) that represents the sequence of
+;; computational steps that take place in a function.
 (defrecord flow-graph-visitor [tape params])
 
 (defn- constant-equation [n]
+  "Helper function that builds an equation representing a constant
+  value."
   (equation. (str (ast/fresh-sym "const")) n))
 
 (defn- arg-equation [n]
+  "Helper function that builds an equation representing a reference to
+  a parameter of the function"
   (equation. (str (ast/fresh-sym "arg")) n))
 
 (defn- fn-equation [name args]
+  "Helper function to create an equation associated with a certain
+  function application."
   (equation. (str (ast/fresh-sym "z")) (ast/fn-application. name args)))
 
 (defn- volatile-equation? [{name :name}]
+  "Volatile equations are created during intermediary steps in the
+  process of building a function's computational graph. More
+  specifically, these are constant and parameter reference
+  equations. These are not included in the final Wengert list
+  representation of a function, and this function can be used as a
+  predicate on a tape to filter these equations."
   (let [sname (str name)]
     (or (s/starts-with? sname "arg") (s/starts-with? sname "const"))))
 
 (defn- append-equations [eqs {tape :tape params :params}]
+  "Given a collection of equations `eqs`, this function will create a
+  new visitor appending the given equations to the end of the tape."
   (let [new-tape (into tape eqs)]
     (flow-graph-visitor. new-tape params)))
 
 (defn- append-equation [eq v]
+  "Helper function to append a single equation to the end of the
+  tape."
   (append-equations [eq] v))
 
 (defn- accept-coll [coll v]
+  "Visits a collection of AST nodes in sequence, with a potentially
+  different tape after each visit."
   (let [build-graph (fn [v n] (accept n v))]
     (reduce build-graph v coll)))
 
@@ -115,13 +141,22 @@
   ast/visitor
 
   (visit-constant [v c]
+    ;; constants add a temporary "constant equation" in the tape. It
+    ;; is ultimately removed from the tape by the enclosing function
+    ;; application
     (->> v
          (append-equation (constant-equation c))))
 
   (visit-variable [{params :params :as v} {name :name :as var}]
+    ;; if the variable being referenced is not in the list of function
+    ;; parameters, raise an error (the function definition is
+    ;; invalid).
     (when-not (contains? params name)
       (utils/foppl-error (str "autodiff error: undefined variable " name)))
 
+    ;; variables, much like constants, add temporary "arg equation" in
+    ;; the tape.  They are also ultimately removed if used within a
+    ;; function application.
     (->> v
          (append-equation (arg-equation var))))
 
@@ -147,17 +182,38 @@
     (utils/foppl-error "TODO"))
 
   (visit-fn-application [{params :params :as v} {name :name args :args}]
-    (let [empty-v (flow-graph-visitor. [] params)
+    (let [;; build a tape from scratch for each of the arguments of the function
+          empty-v (flow-graph-visitor. [] params)
           {args-tape :tape} (accept-coll args empty-v)
 
+          ;; the `args-tape` tape above should have one equation for
+          ;; each argument passed to this function. However, not all
+          ;; equations are ultimately needed in the final, resulting
+          ;; tape. In particular, "volatile equations" are discarded.
+          ;; This function maps equations in the arguments tape into
+          ;; corresponding AST nodes.  If the equation is volatile, it
+          ;; is safe to associate the variable/constant node
+          ;; directly. Otherwise, the corresponding AST node should be
+          ;; a new variable node pointing to the name of the equation
+          ;; being introduced.
           eq-to-ast(fn [{name :name n :n :as eq}] (if (volatile-equation? eq)
                                                    n
                                                    (ast/variable. name)))
-
           fn-args (map eq-to-ast args-tape)
+
+          ;; add to the tape only the argument-related equations that
+          ;; are not volatile
           args-equations (into [] (filter (comp not volatile-equation?) args-tape))
+
+          ;; every function application creates a new equation on the
+          ;; tape.
           fn-eq (fn-equation name fn-args)
 
+          ;; finally, the collection of equations being introduced by
+          ;; a function application is the collection of equation
+          ;; introduced by each argument passed to the function, plus
+          ;; the equation representing the function application
+          ;; itself.
           new-equations (conj args-equations fn-eq)]
 
       (append-equations new-equations v)))
@@ -170,6 +226,9 @@
   )
 
 (defn- compute-graph [{args :args e :e}]
+  "Builds the computational graph (or 'tape', or Wengert list)
+  associated with a function's definition. Returns a collection of
+  equations."
   (let [v (flow-graph-visitor. [] (set args))]
     (:tape (accept e v))))
 
@@ -178,6 +237,11 @@
 (defn- serialize [node] node)
 
 (defn diff [f]
+  "Performs automatic, reverse-mode diferentiation of a function
+  `f`. The function should be passed in quoted form. Returns another
+  function that, when invoked with the correct number of parameters,
+  returns the result of applying `f` with those parameters, and a map
+  of partial derivatives for each function parameter."
   (-> f
       to-tree
       compute-graph
