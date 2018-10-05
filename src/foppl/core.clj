@@ -9,6 +9,7 @@
   (:require [foppl.desugar :as desugar])
   (:require [foppl.graphical :as graphical])
   (:require [foppl.operations :as operations])
+  (:require [foppl.autodiff :as autodiff])
   (:gen-class))
 
 (def ^:private me "foppl")
