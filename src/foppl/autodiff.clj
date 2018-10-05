@@ -1,7 +1,7 @@
 (ns foppl.autodiff
   "Performs reverse-mode automatic differentiation."
   (:require [foppl.ast :as ast :refer [accept]])
-  (:import [foppl.ast definition variable fn-application])
+  (:import [foppl.ast definition variable fn-application if-cond])
   (:require [foppl.utils :as utils])
   (:require [clojure.string :as s])
   (:require [anglican.runtime :refer [exp sin cos]]))
@@ -70,6 +70,30 @@
 (def f1
   '(fn [x] (exp (sin x))))
 
+(def f2
+  '(fn [x y] (+ (* x x) (sin x))))
+
+(def f3
+  '(fn [x] (if (> x 5) (* x x) (+ x 18))))
+
+(def f4
+  '(fn [x] (log x)))
+
+(def f5
+  '(fn [x mu sigma] (+ (- 0 (/ (* (- x mu) (- x mu))
+                              (* 2 (* sigma sigma))))
+                      (* (- 0 (/ 1 2)) (log (* 2 (* 3.141592653589793 (* sigma sigma))))))))
+
+(def f6
+  '(fn [x mu sigma] (normpdf x mu sigma)))
+
+(def f7
+  '(fn [x1 x2 x3] (+ (+ (normpdf x1 2 5)
+                       (if (> x2 7)
+                         (normpdf x2 0 1)
+                         (normpdf x2 10 1)))
+                    (normpdf x3 -4 10))))
+
 ;; Parses an anonymous function definition into an AST (the same used to manipulate
 ;; FOPPL programs).
 (defn- to-tree [f]
@@ -109,6 +133,11 @@
   "Helper function to create an equation associated with a certain
   function application."
   (equation. (str (ast/fresh-sym "z")) (ast/fn-application. name args)))
+
+(defn- if-equation [predicate then else]
+  "Helper function to create an equation associated with a conditional
+  in the definition of the function being derived."
+  (equation. (str (ast/fresh-sym "z")) (ast/if-cond. predicate then else)))
 
 (defn- volatile-equation? [{name :name}]
   "Volatile equations are created during intermediary steps in the
@@ -178,13 +207,54 @@
   (visit-loop [_ _]
     (utils/foppl-error "autodiff error: loops not supported"))
 
-  (visit-if-cond [v {predicate :predicate then :then else :else}]
-    (utils/foppl-error "TODO"))
+  (visit-if-cond [{params :params :as v} {predicate :predicate then :then else :else}]
+    (let [;; visit each branch of this condition with empty tapes
+          empty-v (flow-graph-visitor. [] params)
+          {then-tape :tape} (accept then empty-v)
+          {else-tape :tape} (accept else empty-v)
+
+          ;; helper function to transform the resulting equation of
+          ;; each branch of the conditional into an AST node. The
+          ;; resulting equation is the last equation in the tape.
+          to-ast (fn [tape] (let [final-eq (last tape)
+                                 {name :name n :n} final-eq]
+                             (if (volatile-equation? final-eq)
+                               n
+                               (ast/variable. name))))
+
+          ;; AST nodes representing each branch of the conditional
+          then-ast (to-ast then-tape)
+          else-ast (to-ast else-tape)
+
+          ;; merge both tapes -- equations for both will need to be
+          ;; added to the resulting tape of this `if`
+          ;; expression. Filter those that are volatile and should not
+          ;; be included
+          both-tapes (into then-tape else-tape)
+          branches-eqs (into [] (filter (comp not volatile-equation?) both-tapes))
+
+          ;; create an equation for the `if` expression. The predicate
+          ;; remains unchanged, but the `then` and `else` clauses were
+          ;; computed above
+          if-eq (if-equation predicate then-ast else-ast)
+
+          ;; the equations that should be added to the tape as a
+          ;; result of an `if` expression are those resulting from the
+          ;; computations performed in each branch, plus the `if`
+          ;; expression equation itself.
+          new-equations (conj branches-eqs if-eq)]
+
+      (append-equations new-equations v)))
 
   (visit-fn-application [{params :params :as v} {name :name args :args}]
-    (let [;; build a tape from scratch for each of the arguments of the function
+    (let [ ;; build a tape from scratch for each of the arguments of the function
           empty-v (flow-graph-visitor. [] params)
-          {args-tape :tape} (accept-coll args empty-v)
+          args-vs (map (fn [n] (accept n empty-v)) args)
+          args-tapes (map :tape args-vs)
+
+          ;; each function argument ends up having an equation
+          ;; representing the final result of its computation
+          all-args-eqs (doall (map last args-tapes))
 
           ;; the `args-tape` tape above should have one equation for
           ;; each argument passed to this function. However, not all
@@ -199,11 +269,11 @@
           eq-to-ast(fn [{name :name n :n :as eq}] (if (volatile-equation? eq)
                                                    n
                                                    (ast/variable. name)))
-          fn-args (map eq-to-ast args-tape)
+          fn-args (map eq-to-ast all-args-eqs)
 
           ;; add to the tape only the argument-related equations that
           ;; are not volatile
-          args-equations (into [] (filter (comp not volatile-equation?) args-tape))
+          args-equations (into [] (filter (comp not volatile-equation?) (flatten args-tapes)))
 
           ;; every function application creates a new equation on the
           ;; tape.
@@ -236,7 +306,7 @@
 
 (defn- serialize [node] node)
 
-(defn diff [f]
+(defn perform [f]
   "Performs automatic, reverse-mode diferentiation of a function
   `f`. The function should be passed in quoted form. Returns another
   function that, when invoked with the correct number of parameters,
