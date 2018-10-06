@@ -1,10 +1,12 @@
 (ns foppl.autodiff
   "Performs reverse-mode automatic differentiation."
   (:require [foppl.ast :as ast :refer [accept]])
-  (:import [foppl.ast definition variable fn-application if-cond])
+  (:import [foppl.ast definition constant variable fn-application if-cond literal-map literal-vector local-binding])
+  (:require [foppl.formatter :as formatter])
   (:require [foppl.utils :as utils])
   (:require [clojure.string :as s])
-  (:require [anglican.runtime :refer [exp sin cos]]))
+  (:require [clojure.edn :as edn])
+  (:require [anglican.runtime :as anglican :refer [exp log sin cos]]))
 
 ;; NUMERICAL APPROXIMATIONS -- TEMPORARILY HERE
 
@@ -27,6 +29,9 @@
        ~(zipmap argsyms fdes)))))
 
 ;; ----------------------------------------------
+
+(defn normpdf [y mu sigma]
+  (anglican/observe* (anglican/normal mu sigma) y))
 
 ;; Derivatives of the supported functions of this auto differentiation library
 (def ^:private derivatives
@@ -295,16 +300,70 @@
     (utils/foppl-error "autodiff error: observe call"))
   )
 
+;; comp-graph represents a computational graph derived from the
+;; structure of a function definition. The parameters remain
+;; unchanged, and the tape represents the series of operartions (a
+;; collection of equations) that encode the computations that occur in
+;; the function.
+(defrecord comp-graph [params tape])
+
 (defn- compute-graph [{args :args e :e}]
   "Builds the computational graph (or 'tape', or Wengert list)
   associated with a function's definition. Returns a collection of
   equations."
-  (let [v (flow-graph-visitor. [] (set args))]
-    (:tape (accept e v))))
+  (let [v (flow-graph-visitor. [] (set args))
+        tape (:tape (accept e v))]
+    (comp-graph. args tape)))
 
-(defn- generate-autodiff [tape] tape)
+;; format of the function generated:
+;;
+;; (fn [arg1 ... argn]
+;;   (let [z1 eq1
+;;       ....
+;;         zn eqn]
+;;      [zn]))
+;;
+;; where z1, ..., zn are the symbols used to identify the equations in
+;; the computational graph's tape.
+(defn- generate-autodiff [{params :params tape :tape}]
+  "Given a computation graph, this function will produce another
+  function of the same parameters of the original function that, when
+  evaluated and applied to a proper set of arguments, will produce the
+  value of the original function applied with the parameters given,
+  and a map containing the partial derivatives with respect to each
+  function parameter."
+  (let [ ;; helper functions: create variable and constant AST nodes;
+        ;; create a fresh symbol; and transform a collection into a
+        ;; vector (useful to ensure semantics of cons/conj)
+        variable (fn [name] (ast/variable. name))
+        constant (fn [v] (ast/constant. v))
+        new-name (fn [] (ast/fresh-sym "x"))
+        to-vec (fn [coll] (into [] coll))
 
-(defn- serialize [node] node)
+        ;; create bindings for each equation defined in the tape
+        bind (fn [{name :name n :n}] [(variable name) n])
+        tape-bindings (to-vec (map bind tape))
+
+        bindings (to-vec (flatten tape-bindings))
+        final-name (variable (:name (last tape)))
+
+        ;; the returned expression of this `let` binding is a vector
+        ;; where the first element is the value of the original function
+        ;; `f` applied to the arguments given; and the second element
+        ;; is a map of partial derivatives.
+        e (ast/local-binding. bindings [(ast/literal-vector. [final-name])])]
+
+    (ast/definition. nil (map variable params) e)))
+
+(defn- serialize [f]
+  "Given a function definition represented as an AST node, this
+  function will produce a quoted Clojure function definition that can
+  be passed around, evaluated and applied to different parameters to
+  calculate the partial derivatives with respect to different sets of
+  arguments."
+  (-> f
+      formatter/to-str
+      edn/read-string))
 
 (defn perform [f]
   "Performs automatic, reverse-mode diferentiation of a function

@@ -38,7 +38,9 @@
     (str "{" (accept-coll es v) "}"))
 
   (visit-definition [v {name :name args :args e :e}]
-    (str "(defn " name " [" (accept-coll args v) "]" " " (accept e v) ")"))
+    (if name
+      (str "(defn " name " [" (accept-coll args v) "] " (accept e v) ")")
+      (str "(fn [" (accept-coll args v) "] " (accept e v) ")")))
 
   (visit-local-binding [v {bindings :bindings es :es}]
     (str "(let [" (accept-coll bindings v) "]" (accept-coll es v) ")"))
@@ -61,6 +63,10 @@
   (visit-observe [v {dist :dist val :val}]
     (str "(observe " (accept dist v) " " (accept val v) ")"))
   )
+
+(defn to-str [n]
+  (let [v (formatter-visitor.)]
+    (accept n v)))
 
 (defn perform [{defs :defs e :e}]
   "Performs serialization of the AST into a textual representation.
