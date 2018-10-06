@@ -4,7 +4,6 @@
   (:require [foppl.ast :as ast :refer [accept]])
   (:require [foppl.formatter :as formatter])
   (:require [foppl.eval :as eval])
-  (:import [foppl.formatter formatter-visitor])
   (:require [foppl.utils :as utils]))
 
 (defn- accept-coll [coll v]
@@ -24,17 +23,11 @@
 ;; definitions cannot be nested.
 (defrecord is-e-visitor [])
 
-(defn- to-str [n]
-  "Produces a textual representation of an AST node. Useful for error
-  reporting purposes."
-  (let [visitor (formatter/formatter-visitor.)]
-    (accept n visitor)))
-
 (defn- defn-unexpected [n]
-  (utils/foppl-error (str "Expected function definition, found: " (to-str n))))
+  (utils/foppl-error (str "Expected function definition, found: " (formatter/to-str n))))
 
 (defn- e-unexpected [n]
-  (utils/foppl-error (str "Expected FOPPL expression, found: " (to-str n))))
+  (utils/foppl-error (str "Expected FOPPL expression, found: " (formatter/to-str n))))
 
 (extend-type is-defn-visitor
   ast/visitor

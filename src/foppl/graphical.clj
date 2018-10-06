@@ -9,12 +9,7 @@
             local-binding foreach loops if-cond sample observe program])
   (:require [foppl.eval :as eval])
   (:require [foppl.formatter :as formatter])
-  (:import [foppl.formatter formatter-visitor])
   (:require [foppl.utils :as utils]))
-
-(defn- to-str [e]
-  (let [v (formatter/formatter-visitor.)]
-    (accept e v)))
 
 ;; lists all of the known/expected distribution function supported by FOPPL.
 ;; This list of distributionns was extracted from those supported by Anglican,

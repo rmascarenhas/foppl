@@ -3,13 +3,7 @@
   FOPPL program into an internal representation of a graphical model."
   (:require [foppl.formatter :as formatter])
   (:require [foppl.ast :as ast :refer [accept]])
-  (:import [foppl.formatter formatter-visitor])
   (:require [clojure.string :as s]))
-
-(defn- to-str [e]
-  "Returns a string corresponding to a textual representation of an AST"
-  (let [visitor (formatter/formatter-visitor.)]
-    (accept e visitor)))
 
 (defn count-vertices [{graph :G}]
   (count (:V graph)))
@@ -21,14 +15,14 @@
   "Prints a representation of a graphical model to standard output."
   (let [ ;; format the PDFs for each random variable, as well as the observed
         ;; values into a textual representation for ease of understanding
-        format-map (fn [m] (into {} (map (fn [[random-v e]] [random-v (symbol (to-str e))]) m)))
+        format-map (fn [m] (into {} (map (fn [[random-v e]] [random-v (symbol (formatter/to-str e))]) m)))
         formatted-pdfs (format-map (:P graph))
         formatted-observations (format-map (:Y graph))
 
         formatted-edges (map (fn [[from, to]] (str from "->" to)) (:A graph))
 
         ;; format the program's final deterministic expression too
-        final-e (to-str e)]
+        final-e (formatter/to-str e)]
 
     (println (str "Vertices: " (count-vertices model) ", Edges: " (count-edges model)))
     (println (str "V: " (:V graph)))

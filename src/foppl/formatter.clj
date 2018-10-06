@@ -65,6 +65,7 @@
   )
 
 (defn to-str [n]
+  "Given an AST node, this function returns its string representation."
   (let [v (formatter-visitor.)]
     (accept n v)))
 
