@@ -26,6 +26,7 @@
   (visit-constant [_ {c :n}]
     (cond
       (string? c) (str "\"" c "\"")
+      (symbol? c) (str "'" c)
       :else (str c)))
 
   (visit-variable [_ {name :name}]

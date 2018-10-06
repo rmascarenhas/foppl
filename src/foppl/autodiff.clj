@@ -35,41 +35,41 @@
 
 ;; Derivatives of the supported functions of this auto differentiation library
 (def ^:private derivatives
-  {'* [(fn [a b] b) (fn [a b] a)]
+  {'* ['(fn [a b] b) '(fn [a b] a)]
                                         ; f(a,b) = a * b <-> (* a b)
                                         ; df/da = b
                                         ; df/db = a
-   '- [(fn [a b] 1) (fn [a b] -1)]
+   '- ['(fn [a b] 1) '(fn [a b] -1)]
                                         ; f(a,b) = a - b <-> (- a b)
                                         ; df/da = 1
                                         ; df/db = -1
 
-   '+ [(fn [a b] 1) (fn [a b] 1)]
+   '+ ['(fn [a b] 1) '(fn [a b] 1)]
                                         ; f(a,b) = a + b <-> (+ a b)
                                         ; df/da = 1
                                         ; df/db = 1
 
-   '/ [(fn [a b] (/ 1 b)) (fn [a b] (* a (/ -1 (* b b))))]
+   '/ ['(fn [a b] (/ 1 b)) '(fn [a b] (* a (/ -1 (* b b))))]
                                         ; f(a,b) = a / b <-> (/ a b)
                                         ; df/da = 1
                                         ; df/db = -1/b^2
 
-   'exp [(fn [a] (exp a))]
+   'exp ['(fn [a] (exp a))]
                                         ; f(a) = (exp a)
                                         ; df/da = (exp a)
 
-   'relu [(fn [a] (if (> a 0) 1 0))]
+   'relu ['(fn [a] (if (> a 0) 1 0))]
                                         ; f(a) = (relu a)
                                         ; df/da = 1 if a > 0, 0 otherwise
 
-   'log [(fn [n] nil)]
+   'log ['(fn [n] nil)]
 
-   'normpdf (fn [n] nil)
+   'normpdf '(fn [n] nil)
 
 
-   'sin [(fn [a] (cos a))]
+   'sin ['(fn [a] (cos a))]
 
-   'cos [(fn [a] (sin a))]})
+   'cos ['(fn [a] (sin a))]})
 
 ;; Example functions
 (def f1
@@ -107,7 +107,7 @@
          (= (first f) 'fn)       ;; the first is the 'fn keyword
          (vector? (second f))]} ;; the list of arguments is a vector
 
-  (let [args (second f)
+  (let [args (map ast/to-tree (second f))
         e (last f)]
     (ast/definition. nil args (ast/to-tree e))))
 
@@ -300,6 +300,113 @@
     (utils/foppl-error "autodiff error: observe call"))
   )
 
+;; `delta-visitor` is responsible for visiting an equation
+;; (represented as a function application or an `if` conditional) and
+;; calculating a collection of bindings to be used in the
+;; derivative-generating function. Only functions whose derivatives
+;; are known (i.e., declared in the `derivatives` map) are calculated.
+(defrecord delta-visitor [name delta])
+
+(extend-type delta-visitor
+  ast/visitor
+
+  (visit-constant [_ c]
+    ;; visiting a constant returns `nil`. The caller (a function
+    ;; application) will then be able to identify that no derivative
+    ;; binding is necessary.
+    nil)
+
+  (visit-variable [_ var]
+    ;; if a variable is used in a function application, its partial
+    ;; derivative needs to be calculated (and added to the collection
+    ;; of bindings)
+    var)
+
+  (visit-literal-vector [_ _]
+    (utils/foppl-error (str "autodiff error: literal vectors not supported")))
+
+  (visit-literal-map [_ _]
+    (utils/foppl-error "autodiff error: literal maps not supported"))
+
+  (visit-definition [_ _]
+    (utils/foppl-error "autodiff error: unexpected function definition"))
+
+  (visit-local-binding [_ _]
+    (utils/foppl-error "autodiff error: local bindings not supported"))
+
+  (visit-foreach [_ _]
+    (utils/foppl-error "autodiff error: foreach not supported"))
+
+  (visit-loop [_ _]
+    (utils/foppl-error "autodiff error: loops not supported"))
+
+  (visit-if-cond [v {predicate :predicate then :then else :else}]
+    (utils/foppl-error "TODO"))
+
+  (visit-fn-application [{name :name delta :delta :as v} {f :name args :args}]
+    (let [;; given a function's name, this will return a collection of
+          ;; partial derivatives with respect to each parameter the
+          ;; function takes. Partial derivatives are defined in the
+          ;; `derivatives` collection. If derivates are not known for
+          ;; the function given, this will throw an exception.
+          derivatives-for (fn [name] (doto (get derivatives name)
+                                      (when-not (utils/foppl-error (str "autodiff error: no know derivative for: " name)))))
+
+          ;; collection of partial derivatives for the function being applied
+          ds (derivatives-for f)
+
+          ;; given an index to the collection of parameters a function
+          ;; takes, this will return an AST representation of the
+          ;; partial derivative with respect to the i-th parameter of
+          ;; the function being applied.
+          derivative-at (fn [i] (let [lambda (get ds i)] (to-tree lambda)))
+
+          ;; combines two collections: (zip [a1 a2 a3] [b1 b2 b3]) => [[a1 b1] [a2 b2] [a3 b3]]
+          zip (fn [coll1 coll2] (mapv vector coll1 coll2))
+
+          ;; given an expression and a name->expression pair, this
+          ;; will substitute name for n in e and return the resulting
+          ;; expression
+          substitute-name (fn [e [name n]] (ast/substitute name n e))
+
+          ;; given the definition of a partial derivative (as an
+          ;; anonymous function) and a matching set of arguments, this
+          ;; produces an AST node where each pameter is substituted
+          ;; for the arguments given
+          apply-deriv (fn [{params :args e :e} args] (reduce substitute-name e (zip (map :name params) args)))
+
+          ;; visit each argument passed to the function being applied recursively.
+          ;; Note that these are, by construction, either variables or constants.
+          variable-args (map (fn [n] (accept n v)) args)
+
+          ;; helper function to build the derivative of a variable (that could be either a function
+          ;; parameter or an intermediary result of the computation). `darg` is the AST representation
+          ;; of the partial derivative of the function being applied with respect to the variable given.
+          ;; The derivative is given by the formula:
+          ;;
+          ;;     dv = dv + dz * darg(arg1 ... argn)
+          e-for (fn [{vname :name} darg]
+                  (ast/fn-application. '+ [(delta vname) (ast/fn-application. '* [(delta name) (apply-deriv darg args)])]))
+
+          ;; maps each argument to the function to its partial
+          ;; derivative, according to the formula used in the `e-for`
+          ;; helper function.
+          bindings (map-indexed (fn [i a] (when a [(delta (:name a)) (e-for a (derivative-at i))])) variable-args)
+
+          ;; filter `nil` bindings from the computation above
+          ;; (resulting when some of the arguments passed to the
+          ;; function are constant values).
+          bindings (filter (comp not nil?) bindings)]
+
+      (into [] bindings)))
+
+  (visit-sample [v {dist :dist}]
+    (utils/foppl-error "autodiff error: sample call"))
+
+  (visit-observe [v {dist :dist val :val}]
+    (utils/foppl-error "autodiff error: observe call"))
+  )
+
 ;; comp-graph represents a computational graph derived from the
 ;; structure of a function definition. The parameters remain
 ;; unchanged, and the tape represents the series of operartions (a
@@ -311,7 +418,7 @@
   "Builds the computational graph (or 'tape', or Wengert list)
   associated with a function's definition. Returns a collection of
   equations."
-  (let [v (flow-graph-visitor. [] (set args))
+  (let [v (flow-graph-visitor. [] (set (map :name args)))
         tape (:tape (accept e v))]
     (comp-graph. args tape)))
 
@@ -321,7 +428,15 @@
 ;;   (let [z1 eq1
 ;;       ....
 ;;         zn eqn]
-;;      [zn]))
+;;         darg1 0
+;;         ...
+;;         dargn 0
+;;         dz1 0
+;;         ...
+;;         dzn 1
+;;         dzn (+ ...)
+;;         ...]
+;;      [zn {arg1 darg1 ... argn dargn]))
 ;;
 ;; where z1, ..., zn are the symbols used to identify the equations in
 ;; the computational graph's tape.
@@ -339,21 +454,80 @@
         constant (fn [v] (ast/constant. v))
         new-name (fn [] (ast/fresh-sym "x"))
         to-vec (fn [coll] (into [] coll))
+        delta (fn [name] (variable (str "d" name)))
+        params-names (map :name params)
 
         ;; create bindings for each equation defined in the tape
         bind (fn [{name :name n :n}] [(variable name) n])
         tape-bindings (to-vec (map bind tape))
 
+        ;; the list of bindings is a flat collection (with an even
+        ;; number of elements).  One of the expressions returned by
+        ;; the generated function is the value of the original
+        ;; function f applied to the arguments given (forward-mode
+        ;; execution), and `final-name` represents the variable
+        ;; containing this result.
         bindings (to-vec (flatten tape-bindings))
-        final-name (variable (:name (last tape)))
+        final-eq-name (:name (last tape))
+        final-name (variable final-eq-name)
+
+        ;; Reverse-mode differentiation
+        ;; derivatives of intermediary computation values (as well as
+        ;; function parameters) are prefixed with "d".
+
+        ;; helper function to initialize derivatives of a collection
+        ;; of names to zero
+        init-zero (fn [name] [(delta name) (constant 0)])
+
+        ;; initialize the derivatives of all parameters and tape
+        ;; equation names to zero
+        delta-params (mapv init-zero params-names)
+        delta-tape (mapv init-zero (map :name tape))
+
+        ;; the derivative of the result of the function's computation
+        ;; (represented by the last equation in the tape) is
+        ;; initialized to 1).
+        delta-tape (pop delta-tape)
+        delta-final [(delta final-eq-name) (constant 1)]
+
+        ;; combines the bindings above in a single collection
+        init-deltas (concat delta-params delta-tape delta-final)
+
+        ;; reverse-mode differentiation works through the tape in
+        ;; reverse order
+        backwards (reverse tape)
+
+        ;; for each equation in the tape, calculate the set of
+        ;; bindings that should be added to this generated
+        ;; function. See definition of `delta-visitor` for more
+        ;; information on how this happens.
+        compute-bindings (fn [{name :name n :n}] (let [v (delta-visitor. name delta)] (accept n v)))
+        calculate-derivatives (fn [eq] (compute-bindings eq))
+        derivatives (mapv calculate-derivatives backwards)
+
+        ;; bindings related to derivative calculation is the union of
+        ;; initialization bindings and derivative calculations
+        deriv-bindings (to-vec (concat init-deltas derivatives))
+        bindings (concat bindings (flatten deriv-bindings))
+
+        ;; map names to explicit calls to `symbol` such that, when the
+        ;; function is ultimately evaluated, the returned map contains
+        ;; the name of the parameters as a symbol (instead of trying
+        ;; to resolve the names).
+        symbolize (fn [a] (ast/fn-application. 'symbol [(constant (str a))]))
+
+        ;; the partial derivatives returned to the caller is a map
+        ;; from argument name to the partial derivative of the
+        ;; original function `f` with respect to that parameter.
+        partial-derivs (ast/literal-map. (mapcat (fn [a] [(symbolize a) (delta a)]) params-names))
 
         ;; the returned expression of this `let` binding is a vector
         ;; where the first element is the value of the original function
         ;; `f` applied to the arguments given; and the second element
         ;; is a map of partial derivatives.
-        e (ast/local-binding. bindings [(ast/literal-vector. [final-name])])]
+        e (ast/local-binding. bindings [(ast/literal-vector. [final-name partial-derivs])])]
 
-    (ast/definition. nil (map variable params) e)))
+    (ast/definition. nil params e)))
 
 (defn- serialize [f]
   "Given a function definition represented as an AST node, this

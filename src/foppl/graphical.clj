@@ -62,63 +62,6 @@
   (let [perform (fn [n] (accept n v))]
     (doall (map perform coll))))
 
-;; an AST visitor that performs substitution of a variable of the given
-;; name for expression 'e' in some target expression
-(defrecord substitution-visitor [name e])
-
-(extend-type substitution-visitor
-  ast/visitor
-
-  (visit-literal-vector [v {es :es}]
-    (ast/literal-vector. (accept-coll es v)))
-
-  (visit-literal-map [v {es :es}]
-    (ast/literal-map. (accept-coll es v)))
-
-  (visit-foreach [_ _]
-    (utils/ice "foreach constructs should have been desugared during codegen"))
-
-  (visit-loop [_ _]
-    (utils/ice "loop constructs should have been desugared during codegen"))
-
-  (visit-constant [_ c]
-    c)
-
-  (visit-variable [{name :name e :e} {var-name :name :as var}]
-    (if (= name var-name) e var))
-
-  (visit-definition [v {name :name args :args e :e}]
-    (utils/foppl-error "function definitions should not be inside variable substitution"))
-
-  (visit-local-binding [{name :name :as v} {bindings :bindings es :es :as local-binding}]
-    {:pre [(= (count bindings) 2) (= (count es) 1)]}
-
-    (let [bound-var (first bindings)
-          bound-name (:name bound-var)
-          bound-val (last bindings)
-          new-bindings [bound-var (accept bound-val v)]
-          es (if (= name bound-name) es (accept-coll es v))]
-      (ast/local-binding. new-bindings es)))
-
-  (visit-if-cond [v {predicate :predicate then :then else :else}]
-    (ast/if-cond. (accept predicate v) (accept then v) (accept else v)))
-
-  (visit-fn-application [v {name :name args :args}]
-    (ast/fn-application. name (accept-coll args v)))
-
-  (visit-sample [v {dist :dist}]
-    (ast/sample. (accept dist v)))
-
-  (visit-observe [v {dist :dist val :val}]
-    (ast/observe. (accept dist v) (accept val v)))
-  )
-
-(defn- substitute [name e target]
-  "Substitutes 'name' for expression 'e' in expression 'target'.
-  Returns a modified AST subtree."
-  (let [visitor (substitution-visitor. name e)]
-    (accept target visitor)))
-
 ;; This visitor is responsible for finding out all the free variables
 ;; in an expression, given a set of variables known to be bound.
 (defrecord fv-visitor [bound])
@@ -289,7 +232,7 @@
         ;; the target expression from which a graphical model is going to be
         ;; extracted is reduced from the list of formal parameters, by
         ;; successively performing substituion
-        target-e (reduce (fn [reduced, name] (substitute name (expression-for name) reduced)) e bound-names)]
+        target-e (reduce (fn [reduced, name] (ast/substitute name (expression-for name) reduced)) e bound-names)]
 
     ;; generate graphical model for the target expression with every parameter
     ;; substituted
@@ -333,7 +276,7 @@
 
           ;; then substitute v for the deterministic expression obtained
           ;; on the previous step in the target expression e2
-          target-e (substitute bound-name deterministic-e1 e2)
+          target-e (ast/substitute bound-name deterministic-e1 e2)
 
           ;; then translate the result of that to a graph + deterministic
           ;; resulting expression

@@ -1,5 +1,6 @@
 (ns foppl.ast
   "Defines AST data structures and visitor protocol."
+  (:require [foppl.utils :as utils])
   (:require [clojure.edn :as edn]))
 
 ;; ================================================================ ;;
@@ -279,6 +280,63 @@
   (accept [n v]
     (visit-observe v n)))
 
+(defn- accept-coll [coll v]
+  "Given a collection of AST nodes and a node visitor, this function will apply
+  the visitor to all elements of the collection."
+  (let [perform (fn [n] (accept n v))]
+    (doall (map perform coll))))
+
+;; an AST visitor that performs substitution of a variable of the given
+;; name for expression 'e' in some target expression
+(defrecord substitution-visitor [name e])
+
+(extend-type substitution-visitor
+  visitor
+
+  (visit-literal-vector [v {es :es}]
+    (literal-vector. (accept-coll es v)))
+
+  (visit-literal-map [v {es :es}]
+    (literal-map. (accept-coll es v)))
+
+  (visit-foreach [_ _]
+    (utils/ice "foreach constructs should have been desugared during substitution"))
+
+  (visit-loop [_ _]
+    (utils/ice "loop constructs should have been desugared during substitution"))
+
+  (visit-constant [_ c]
+    c)
+
+  (visit-variable [{name :name e :e} {var-name :name :as var}]
+    (if (= name var-name) e var))
+
+  (visit-definition [v {name :name args :args e :e}]
+    (utils/foppl-error "function definitions should not be inside variable substitution"))
+
+  (visit-local-binding [{name :name :as v} {bindings :bindings es :es :as local-binding}]
+    {:pre [(= (count bindings) 2) (= (count es) 1)]}
+
+    (let [bound-var (first bindings)
+          bound-name (:name bound-var)
+          bound-val (last bindings)
+          new-bindings [bound-var (accept bound-val v)]
+          es (if (= name bound-name) es (accept-coll es v))]
+      (local-binding. new-bindings es)))
+
+  (visit-if-cond [v {predicate :predicate then :then else :else}]
+    (if-cond. (accept predicate v) (accept then v) (accept else v)))
+
+  (visit-fn-application [v {name :name args :args}]
+    (fn-application. name (accept-coll args v)))
+
+  (visit-sample [v {dist :dist}]
+    (sample. (accept dist v)))
+
+  (visit-observe [v {dist :dist val :val}]
+    (observe. (accept dist v) (accept val v)))
+  )
+
 ;; ================================================================ ;;
 ;;                       PUBLIC FUNCTIONS                           ;;
 ;; ================================================================ ;;
@@ -296,6 +354,12 @@
       (symbol? sexp) (handle-variable sexp)
       (list? sexp) (handle-list sexp)
       :else (invalid-foppl sexp))))
+
+(defn substitute [name e target]
+  "Substitutes 'name' for expression 'e' in expression 'target'.
+  Returns a modified AST subtree."
+  (let [visitor (substitution-visitor. name e)]
+    (accept target visitor)))
 
 (defn fresh-sym
   "Returns an unused symbol that can be used during the compilation pipeline to stand
