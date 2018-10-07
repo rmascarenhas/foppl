@@ -1,6 +1,7 @@
 (ns foppl.autodiff
   "Performs reverse-mode automatic differentiation."
   (:require [foppl.ast :as ast :refer [accept]])
+  (:require [foppl.desugar :as desugar])
   (:import [foppl.ast definition constant variable fn-application if-cond literal-map literal-vector local-binding])
   (:require [foppl.formatter :as formatter])
   (:require [foppl.utils :as utils])
@@ -62,9 +63,32 @@
                                         ; f(a) = (relu a)
                                         ; df/da = 1 if a > 0, 0 otherwise
 
-   'log ['(fn [n] nil)]
+   'log ['(fn [n] (/ 1 n))]
 
-   'normpdf '(fn [n] nil)
+   'normpdf ['(fn [x m s] (let [m-x (- m x)
+                               s2 (* s s)
+                               s3 (* s2 s)
+                               m-x2 (* m-x m-x)
+                               exponent (- (/ m-x2 (* 2 s2)))]
+                           (/ (* m-x (exp exponent)) (* (anglican/sqrt (* 2 Math/PI)) s3))))
+
+             '(fn [x m s] (let [x-m (- x m)
+                               m-x (- m x)
+                               s2 (* s s)
+                               s3 (* s2 s)
+                               m-x2 (* m-x m-x)
+                               exponent (- (/ m-x2 (* 2 s2)))]
+                           (/ (* x-m (exp exponent)) (* (anglican/sqrt (* 2 Math/PI)) s3))))
+
+             '(fn [x m s] (let [m-x (- m x)
+                               s-x+u (+ (- s x) u)
+                               s+x-u (- (+ s x) u)
+                               s2 (* s s)
+                               s4 (* s2 s2)
+                               m-x2 (* m-x m-x)
+                               exponent (- (/ m-x2 (* 2 s2)))]
+                           (- (/ (* s-x+u s+x-u (exp exponent)) (* anglican/sqrt (* 2 Math/PI) s4)))))
+             ]
 
 
    'sin ['(fn [a] (cos a))]
@@ -108,8 +132,10 @@
          (vector? (second f))]} ;; the list of arguments is a vector
 
   (let [args (map ast/to-tree (second f))
-        e (last f)]
-    (ast/definition. nil args (ast/to-tree e))))
+        e (last f)
+        parsed-e (ast/to-tree e)
+        {e :e} (desugar/perform {:defs nil :e parsed-e})]
+    (ast/definition. nil args e)))
 
 ;; an equation is an element of the tape that is produced by
 ;; traversing a function's definition and building its corresponding
@@ -197,7 +223,7 @@
   (visit-literal-vector [_ _]
     (utils/foppl-error (str "autodiff error: literal vectors not supported")))
 
-  (visit-literal-map [_ _]
+  (visit-literal-map [_ m]
     (utils/foppl-error "autodiff error: literal maps not supported"))
 
   (visit-definition [_ _]
@@ -344,7 +370,7 @@
     (utils/foppl-error "TODO"))
 
   (visit-fn-application [{name :name delta :delta :as v} {f :name args :args}]
-    (let [;; given a function's name, this will return a collection of
+    (let [ ;; given a function's name, this will return a collection of
           ;; partial derivatives with respect to each parameter the
           ;; function takes. Partial derivatives are defined in the
           ;; `derivatives` collection. If derivates are not known for
