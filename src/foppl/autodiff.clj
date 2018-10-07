@@ -26,7 +26,7 @@
         fdes (map #(finite-difference-expr expr args % d) (range (count args)))
         argsyms (map (fn [x] `(~'quote ~x)) args)]
     `(~'fn [~@args]
-      (~'let [~d 0.001]
+      (~'let [~d 0.0001]
        ~(zipmap argsyms fdes)))))
 
 ;; ----------------------------------------------
@@ -465,48 +465,6 @@
           bindings (filter (comp not nil?) bindings)]
 
       (into [] bindings)))
-
-  (visit-sample [v {dist :dist}]
-    (utils/foppl-error "autodiff error: sample call"))
-
-  (visit-observe [v {dist :dist val :val}]
-    (utils/foppl-error "autodiff error: observe call"))
-  )
-
-(defrecord variable-counter-visitor [])
-
-(extend-type variable-counter-visitor
-  ast/visitor
-
-  (visit-constant [_ _]
-    0)
-
-  (visit-variable [_ _]
-    1)
-
-  (visit-literal-vector [v {es :es}]
-    (reduce + (map (fn [n] (accept n v)) es)))
-
-  (visit-literal-map [v {es :es}]
-    (reduce + (map (fn [n] (accept n v)) es)))
-
-  (visit-definition [v {e :e}]
-    (accept e v))
-
-  (visit-local-binding [_ _]
-    (utils/foppl-error "autodiff error: local bindings not supported"))
-
-  (visit-foreach [_ _]
-    (utils/foppl-error "autodiff error: foreach not supported"))
-
-  (visit-loop [_ _]
-    (utils/foppl-error "autodiff error: loops not supported"))
-
-  (visit-if-cond [v {then :then else :else}]
-    (+ (accept then v) (accept else v)))
-
-  (visit-fn-application [v {args :args}]
-    (reduce + (map (fn [n] (accept n v)) args)))
 
   (visit-sample [v {dist :dist}]
     (utils/foppl-error "autodiff error: sample call"))
