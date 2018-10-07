@@ -81,13 +81,13 @@
                            (/ (* x-m (exp exponent)) (* (anglican/sqrt (* 2 Math/PI)) s3))))
 
              '(fn [x m s] (let [m-x (- m x)
-                               s-x+u (+ (- s x) u)
-                               s+x-u (- (+ s x) u)
+                               s-x+m (+ (- s x) m)
+                               s+x-m (- (+ s x) m)
                                s2 (* s s)
                                s4 (* s2 s2)
                                m-x2 (* m-x m-x)
                                exponent (- (/ m-x2 (* 2 s2)))]
-                           (- (/ (* s-x+u s+x-u (exp exponent)) (* anglican/sqrt (* 2 Math/PI) s4)))))
+                           (- (/ (* s-x+m s+x-m (exp exponent)) (* (anglican/sqrt (* 2 Math/PI)) s4)))))
              ]
 
 
@@ -576,3 +576,10 @@
       compute-graph
       generate-autodiff
       serialize))
+
+;; test function
+(defn verify [f & args]
+  (println "Approximation:")
+  (println [(apply (eval f) args) (apply (eval (finite-difference-grad f)) args)])
+  (println "Computed:")
+  (println (apply (eval (perform f)) args)))
