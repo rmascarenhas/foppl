@@ -1,13 +1,13 @@
 (ns foppl.autodiff
   "Performs reverse-mode automatic differentiation."
-  (:require [foppl.ast :as ast :refer [accept]])
-  (:require [foppl.desugar :as desugar])
-  (:import [foppl.ast definition constant variable fn-application if-cond literal-map literal-vector local-binding])
-  (:require [foppl.formatter :as formatter])
-  (:require [foppl.utils :as utils])
-  (:require [clojure.string :as s])
-  (:require [clojure.edn :as edn])
-  (:require [anglican.runtime :as anglican :refer [exp log sin cos]]))
+  (:require [foppl.ast :as ast :refer [accept]]
+            [foppl.desugar :as desugar]
+            [foppl.formatter :as formatter]
+            [foppl.utils :as utils]
+            [clojure.string :as s]
+            [clojure.edn :as edn]
+            [anglican.runtime :as anglican :refer [exp log sin cos]])
+  (:import [foppl.ast definition constant variable fn-application if-cond literal-map literal-vector local-binding]))
 
 ;; NUMERICAL APPROXIMATIONS -- TEMPORARILY HERE
 

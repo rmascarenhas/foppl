@@ -1,15 +1,14 @@
 (ns foppl.core
   "Defines the compiler's main function. Validates command line parameters and
   gets the compilation pipeline started."
-  (:require [clojure.string :as string])
-  (:require [clojure.java.io :as io])
-  (:require [foppl.ast :as ast])
-  (:require [foppl.validation :as validation])
-  (:require [foppl.scope :as scope])
-  (:require [foppl.desugar :as desugar])
-  (:require [foppl.graphical :as graphical])
-  (:require [foppl.operations :as operations])
-  (:require [foppl.autodiff :as autodiff])
+  (:require [clojure.string :as string]
+            [clojure.java.io :as io]
+            [foppl.ast :as ast]
+            [foppl.validation :as validation]
+            [foppl.scope :as scope]
+            [foppl.desugar :as desugar]
+            [foppl.graphical :as graphical]
+            [foppl.operations :as operations])
   (:gen-class))
 
 (def ^:private me "foppl")

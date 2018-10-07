@@ -1,9 +1,9 @@
 (ns foppl.desugar
   "Desugars a FOPPL program. See documentation for each of the AST visitors
   defined in this namespace to find out each desugaring step applied."
-  (:require [foppl.ast :as ast :refer [accept]])
-  (:import [foppl.ast constant variable fn-application definition local-binding foreach loops if-cond sample observe program])
-  (:require [foppl.utils :as utils]))
+  (:require [foppl.ast :as ast :refer [accept]]
+            [foppl.utils :as utils])
+  (:import [foppl.ast constant variable fn-application definition local-binding foreach loops if-cond sample observe program]))
 
 ;; the data structure desugaring visitor translates every literal array ([e1, e2, ...]) to
 ;; a function application of 'vector'. In addition, it also transforms every literal map

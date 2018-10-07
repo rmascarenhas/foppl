@@ -1,9 +1,9 @@
 (ns foppl.formatter
   "Formats the AST back into a textual representation."
-  (:require [foppl.ast :as ast :refer [accept]])
-  (:import [foppl.ast fn-application definition local-binding if-cond sample observe program])
-  (:require [foppl.utils :as utils])
-  (:require [clojure.string :as s]))
+  (:require [foppl.ast :as ast :refer [accept]]
+            [foppl.utils :as utils]
+            [clojure.string :as s])
+  (:import [foppl.ast fn-application definition local-binding if-cond sample observe program]))
 
 ;; The formattter visitor traverses the AST and produces a textual representation of
 ;; the parsed code. Note that minimum effort was put into producing nicely formatted

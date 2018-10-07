@@ -1,7 +1,7 @@
 (ns foppl.ast
   "Defines AST data structures and visitor protocol."
-  (:require [foppl.utils :as utils])
-  (:require [clojure.edn :as edn]))
+  (:require [foppl.utils :as utils]
+            [clojure.edn :as edn]))
 
 ;; ================================================================ ;;
 ;;                          RECORD DEFINITIONS                      ;;

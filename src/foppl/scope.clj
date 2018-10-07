@@ -3,9 +3,9 @@
   Ensures that every variable used can be resolved (was previously
   bound) as well as every function application is resolved to a
   known function. Traverses the AST but never performs any mutation."
-  (:require [foppl.ast :as ast :refer [accept]])
-  (:require [foppl.utils :as utils])
-  (:require [foppl.eval :as eval]))
+  (:require [foppl.ast :as ast :refer [accept]]
+            [foppl.utils :as utils]
+            [foppl.eval :as eval]))
 
 ;; ================================================================ ;;
 ;;                          ENVIRONMENTS                            ;;

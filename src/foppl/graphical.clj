@@ -2,14 +2,14 @@
   "Graphical model backend. This module is responsible for generating
   a graphical model representation of a FOPPL program given a desugared
   AST data structure."
-  (:require [clojure.set :as set])
-  (:require [clojure.string :as s])
-  (:require [foppl.ast :as ast :refer [accept]])
+  (:require [clojure.set :as set]
+            [clojure.string :as s]
+            [foppl.ast :as ast :refer [accept]]
+            [foppl.eval :as eval]
+            [foppl.formatter :as formatter]
+            [foppl.utils :as utils])
   (:import [foppl.ast constant variable literal-vector literal-map fn-application definition
-            local-binding foreach loops if-cond sample observe program])
-  (:require [foppl.eval :as eval])
-  (:require [foppl.formatter :as formatter])
-  (:require [foppl.utils :as utils]))
+            local-binding foreach loops if-cond sample observe program]))
 
 ;; lists all of the known/expected distribution function supported by FOPPL.
 ;; This list of distributionns was extracted from those supported by Anglican,

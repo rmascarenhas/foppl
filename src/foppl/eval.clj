@@ -3,14 +3,13 @@
   Allows the partial evaluation of deterministic expressions in graphical
   models in order to simplify the model and reduce the number of dependencies
   among random variables."
-  (:require [clojure.string :as s])
-  (:require [anglican.runtime])
-  (:require [foppl.ast :as ast :refer [accept]])
-  (:import [foppl.ast constant fn-application])
-  (:require [foppl.formatter :as formatter])
-  (:import [foppl.formatter formatter-visitor])
-  (:require [foppl.primitives])
-  (:require [foppl.utils :as utils]))
+  (:require [clojure.string :as s]
+            [anglican.runtime]
+            [foppl.ast :as ast :refer [accept]]
+            [foppl.formatter :as formatter]
+            [foppl.primitives]
+            [foppl.utils :as utils])
+  (:import [foppl.ast constant fn-application]))
 
 ;; defines a map from function name -> function object for every function
 ;; that can potentially be applied. In practice, see `valid-fn?` definition

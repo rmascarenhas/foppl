@@ -1,10 +1,10 @@
 (ns foppl.validation
   "Validates well-formedness of a FOPPL program according to the semantics of
   the language."
-  (:require [foppl.ast :as ast :refer [accept]])
-  (:require [foppl.formatter :as formatter])
-  (:require [foppl.eval :as eval])
-  (:require [foppl.utils :as utils]))
+  (:require [foppl.ast :as ast :refer [accept]]
+            [foppl.formatter :as formatter]
+            [foppl.eval :as eval]
+            [foppl.utils :as utils]))
 
 (defn- accept-coll [coll v]
   "Visits each node in coll with visitor v"
