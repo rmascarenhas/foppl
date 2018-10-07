@@ -141,34 +141,43 @@
 ;; traversing a function's definition and building its corresponding
 ;; computational graph. An equation associates a unique name to a
 ;; function application, represented by the AST node defined in
-;; `foppl.ast`. Every name in a tape is unique.
-(defrecord equation [name n])
+;; `foppl.ast`. Every name in a tape is unique. In addition, an
+;; equation can have an associated `predicate`, when the function is
+;; applied in the context of an `if` expression. Conditionals are
+;; important when traversing the computational graph in reverse mode,
+;; when the derivatives should only be calculated if the predicate is
+;; true for the parameters given, and should refer the derivatives of
+;; the labels pointing to the conditional expression in forward mode.
+(defrecord equation [name n predicate cond-name])
 
 ;; the flow-graph-visitor is responsible for traversing the definition
 ;; of the function that is being differentiated. Its goal is to build
 ;; a "tape" (or Wengert List) that represents the sequence of
 ;; computational steps that take place in a function.
-(defrecord flow-graph-visitor [tape params])
+(defrecord flow-graph-visitor [tape params predicate])
 
 (defn- constant-equation [n]
   "Helper function that builds an equation representing a constant
   value."
-  (equation. (str (ast/fresh-sym "const")) n))
+  (equation. (str (ast/fresh-sym "const")) n nil nil))
 
 (defn- arg-equation [n]
   "Helper function that builds an equation representing a reference to
   a parameter of the function"
-  (equation. (str (ast/fresh-sym "arg")) n))
+  (equation. (str (ast/fresh-sym "arg")) n nil nil))
 
-(defn- fn-equation [name args]
+(defn- fn-equation [name args predicate]
   "Helper function to create an equation associated with a certain
   function application."
-  (equation. (str (ast/fresh-sym "z")) (ast/fn-application. name args)))
+  (equation. (str (ast/fresh-sym "z")) (ast/fn-application. name args) predicate nil))
 
 (defn- if-equation [predicate then else]
   "Helper function to create an equation associated with a conditional
   in the definition of the function being derived."
-  (equation. (str (ast/fresh-sym "z")) (ast/if-cond. predicate then else)))
+  (equation. (str (ast/fresh-sym "z")) (ast/if-cond. predicate then else) nil nil))
+
+(defn- condition-on [{name :name n :n pred :predicate} if-name]
+  (equation. name n pred if-name))
 
 (defn- volatile-equation? [{name :name}]
   "Volatile equations are created during intermediary steps in the
@@ -180,11 +189,11 @@
   (let [sname (str name)]
     (or (s/starts-with? sname "arg") (s/starts-with? sname "const"))))
 
-(defn- append-equations [eqs {tape :tape params :params}]
+(defn- append-equations [eqs {tape :tape params :params predicate :predicate}]
   "Given a collection of equations `eqs`, this function will create a
   new visitor appending the given equations to the end of the tape."
   (let [new-tape (into tape eqs)]
-    (flow-graph-visitor. new-tape params)))
+    (flow-graph-visitor. new-tape params predicate)))
 
 (defn- append-equation [eq v]
   "Helper function to append a single equation to the end of the
@@ -238,11 +247,20 @@
   (visit-loop [_ _]
     (utils/foppl-error "autodiff error: loops not supported"))
 
-  (visit-if-cond [{params :params :as v} {predicate :predicate then :then else :else}]
-    (let [;; visit each branch of this condition with empty tapes
-          empty-v (flow-graph-visitor. [] params)
-          {then-tape :tape} (accept then empty-v)
-          {else-tape :tape} (accept else empty-v)
+  (visit-if-cond [{params :params eq-predicate :predicate :as v} {predicate :predicate then :then else :else}]
+    (let [;; helper function to add a predicate to the list of
+          ;; predicates associated with this visitor
+          nest-predicate (fn [pred] (if eq-predicate (ast/fn-application. 'and [eq-predicate pred]) pred))
+
+          ;; visit sub-expressions recursively with an empty tape:
+          ;; `then` clause with the `if` expression's predicate; and
+          ;; the `else` clause with the negation of that.
+          then-empty-v (flow-graph-visitor. [] params (nest-predicate predicate))
+          else-empty-v (flow-graph-visitor. [] params (nest-predicate (ast/fn-application. 'not [predicate])))
+
+          ;; calculate the tapes in each clause of the conditional
+          {then-tape :tape} (accept then then-empty-v)
+          {else-tape :tape} (accept else else-empty-v)
 
           ;; helper function to transform the resulting equation of
           ;; each branch of the conditional into an AST node. The
@@ -257,17 +275,26 @@
           then-ast (to-ast then-tape)
           else-ast (to-ast else-tape)
 
+          ;; create an equation for the `if` expression. The predicate
+          ;; remains unchanged, but the `then` and `else` clauses were
+          ;; computed above
+          if-eq (if-equation predicate then-ast else-ast)
+
+          ;; associate if-equation to the result equations of each
+          ;; branch of the conditional
+          add-cond (fn [tape] (let [last-eq (last tape)
+                                   without-last (pop tape)]
+                               (conj without-last (condition-on last-eq (:name if-eq)))))
+
+          then-tape (add-cond then-tape)
+          else-tape (add-cond else-tape)
+
           ;; merge both tapes -- equations for both will need to be
           ;; added to the resulting tape of this `if`
           ;; expression. Filter those that are volatile and should not
           ;; be included
           both-tapes (into then-tape else-tape)
           branches-eqs (into [] (filter (comp not volatile-equation?) both-tapes))
-
-          ;; create an equation for the `if` expression. The predicate
-          ;; remains unchanged, but the `then` and `else` clauses were
-          ;; computed above
-          if-eq (if-equation predicate then-ast else-ast)
 
           ;; the equations that should be added to the tape as a
           ;; result of an `if` expression are those resulting from the
@@ -277,9 +304,9 @@
 
       (append-equations new-equations v)))
 
-  (visit-fn-application [{params :params :as v} {name :name args :args}]
+  (visit-fn-application [{params :params predicate :predicate :as v} {name :name args :args}]
     (let [ ;; build a tape from scratch for each of the arguments of the function
-          empty-v (flow-graph-visitor. [] params)
+          empty-v (flow-graph-visitor. [] params predicate)
           args-vs (map (fn [n] (accept n empty-v)) args)
           args-tapes (map :tape args-vs)
 
@@ -308,7 +335,7 @@
 
           ;; every function application creates a new equation on the
           ;; tape.
-          fn-eq (fn-equation name fn-args)
+          fn-eq (fn-equation name fn-args predicate)
 
           ;; finally, the collection of equations being introduced by
           ;; a function application is the collection of equation
@@ -327,11 +354,13 @@
   )
 
 ;; `delta-visitor` is responsible for visiting an equation
-;; (represented as a function application or an `if` conditional) and
-;; calculating a collection of bindings to be used in the
-;; derivative-generating function. Only functions whose derivatives
-;; are known (i.e., declared in the `derivatives` map) are calculated.
-(defrecord delta-visitor [name delta])
+;; (represented as a function applicationl) and calculating a
+;; collection of bindings to be used in the derivative-generating
+;; function. Only functions whose derivatives are known (i.e.,
+;; declared in the `derivatives` map) are calculated. Equations have
+;; associated predicates: if the predicate associated with an equation
+;; is non-null, the bindings are prefixed by checks of the predicate
+(defrecord delta-visitor [name predicate cond delta])
 
 (extend-type delta-visitor
   ast/visitor
@@ -366,10 +395,10 @@
   (visit-loop [_ _]
     (utils/foppl-error "autodiff error: loops not supported"))
 
-  (visit-if-cond [v {predicate :predicate then :then else :else}]
-    (utils/foppl-error "TODO"))
+  (visit-if-cond [{name :name delta :delta :as v} {predicate :predicate then :then else :else}]
+    (utils/foppl-error "autodiff error: if expressions should have been removed from tape"))
 
-  (visit-fn-application [{name :name delta :delta :as v} {f :name args :args}]
+  (visit-fn-application [{name :name pred :predicate cond :cond delta :delta :as v} {f :name args :args}]
     (let [ ;; given a function's name, this will return a collection of
           ;; partial derivatives with respect to each parameter the
           ;; function takes. Partial derivatives are defined in the
@@ -411,13 +440,24 @@
           ;; The derivative is given by the formula:
           ;;
           ;;     dv = dv + dz * darg(arg1 ... argn)
-          e-for (fn [{vname :name} darg]
-                  (ast/fn-application. '+ [(delta vname) (ast/fn-application. '* [(delta name) (apply-deriv darg args)])]))
+          dname (or cond name)
+          formula-for (fn [{vname :name} darg]
+                        (ast/fn-application. '+ [(delta vname) (ast/fn-application. '* [(delta dname) (apply-deriv darg args)])]))
+
+          ;; wraps the formula computed above with a check for the associated
+          ;; predicate if existent:
+          ;;
+          ;;   dv = if predicate then dv + dz * darg(..) else dv
+          derive (fn [{vname :name :as var} darg]
+                   (let [formula (formula-for var darg)]
+                     (if pred
+                       (ast/if-cond. pred formula (delta vname))
+                       formula)))
 
           ;; maps each argument to the function to its partial
           ;; derivative, according to the formula used in the `e-for`
           ;; helper function.
-          bindings (map-indexed (fn [i a] (when a [(delta (:name a)) (e-for a (derivative-at i))])) variable-args)
+          bindings (map-indexed (fn [i a] (when a [(delta (:name a)) (derive a (derivative-at i))])) variable-args)
 
           ;; filter `nil` bindings from the computation above
           ;; (resulting when some of the arguments passed to the
@@ -425,6 +465,48 @@
           bindings (filter (comp not nil?) bindings)]
 
       (into [] bindings)))
+
+  (visit-sample [v {dist :dist}]
+    (utils/foppl-error "autodiff error: sample call"))
+
+  (visit-observe [v {dist :dist val :val}]
+    (utils/foppl-error "autodiff error: observe call"))
+  )
+
+(defrecord variable-counter-visitor [])
+
+(extend-type variable-counter-visitor
+  ast/visitor
+
+  (visit-constant [_ _]
+    0)
+
+  (visit-variable [_ _]
+    1)
+
+  (visit-literal-vector [v {es :es}]
+    (reduce + (map (fn [n] (accept n v)) es)))
+
+  (visit-literal-map [v {es :es}]
+    (reduce + (map (fn [n] (accept n v)) es)))
+
+  (visit-definition [v {e :e}]
+    (accept e v))
+
+  (visit-local-binding [_ _]
+    (utils/foppl-error "autodiff error: local bindings not supported"))
+
+  (visit-foreach [_ _]
+    (utils/foppl-error "autodiff error: foreach not supported"))
+
+  (visit-loop [_ _]
+    (utils/foppl-error "autodiff error: loops not supported"))
+
+  (visit-if-cond [v {then :then else :else}]
+    (+ (accept then v) (accept else v)))
+
+  (visit-fn-application [v {args :args}]
+    (reduce + (map (fn [n] (accept n v)) args)))
 
   (visit-sample [v {dist :dist}]
     (utils/foppl-error "autodiff error: sample call"))
@@ -444,7 +526,7 @@
   "Builds the computational graph (or 'tape', or Wengert list)
   associated with a function's definition. Returns a collection of
   equations."
-  (let [v (flow-graph-visitor. [] (set (map :name args)))
+  (let [v (flow-graph-visitor. [] (set (map :name args)) nil)
         tape (:tape (accept e v))]
     (comp-graph. args tape)))
 
@@ -519,15 +601,15 @@
         ;; combines the bindings above in a single collection
         init-deltas (concat delta-params delta-tape delta-final)
 
-        ;; reverse-mode differentiation works through the tape in
-        ;; reverse order
-        backwards (reverse tape)
+        if-expression? (fn [{n :n}] (:predicate n))
+        backwards (reverse (filter (comp not if-expression?) tape))
 
         ;; for each equation in the tape, calculate the set of
         ;; bindings that should be added to this generated
         ;; function. See definition of `delta-visitor` for more
         ;; information on how this happens.
-        compute-bindings (fn [{name :name n :n}] (let [v (delta-visitor. name delta)] (accept n v)))
+        compute-bindings (fn [{name :name n :n pred :predicate cond :cond-name}]
+                           (let [v (delta-visitor. name pred cond delta)] (accept n v)))
         calculate-derivatives (fn [eq] (compute-bindings eq))
         derivatives (mapv calculate-derivatives backwards)
 
