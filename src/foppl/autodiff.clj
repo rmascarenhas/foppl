@@ -9,29 +9,8 @@
             [anglican.runtime :as anglican :refer [exp log sin cos]])
   (:import [foppl.ast definition constant variable fn-application if-cond literal-map literal-vector local-binding]))
 
-;; NUMERICAL APPROXIMATIONS -- TEMPORARILY HERE
-
-(defn addd [exprl i d]
-  (if (= i 0)
-    (reduce conj [`(~'+ ~d ~(first exprl))] (subvec exprl 1))
-    (reduce conj (subvec exprl 0 i)
-            (reduce conj [`(~'+ ~d ~(get exprl i))] (subvec exprl (+ i 1))))))
-
-(defn finite-difference-expr [expr args i d]
-  `(~'/ (~'- (~expr ~@(addd args i d)) (~expr ~@args)) ~d))
-
-(defn finite-difference-grad [expr]
-  (let [[op args body] expr
-        d (gensym)
-        fdes (map #(finite-difference-expr expr args % d) (range (count args)))
-        argsyms (map (fn [x] `(~'quote ~x)) args)]
-    `(~'fn [~@args]
-      (~'let [~d 0.0001]
-       ~(zipmap argsyms fdes)))))
-
-;; ----------------------------------------------
-
 (defn normpdf [y mu sigma]
+  "Log PDF of a normal (Gaussian) distribution"
   (anglican/observe* (anglican/normal mu sigma) y))
 
 ;; Derivatives of the supported functions of this auto differentiation library
@@ -72,34 +51,6 @@
    'sin ['(fn [a] (cos a))]
 
    'cos ['(fn [a] (sin a))]})
-
-;; Example functions
-(def f1
-  '(fn [x] (exp (sin x))))
-
-(def f2
-  '(fn [x y] (+ (* x x) (sin x))))
-
-(def f3
-  '(fn [x] (if (> x 5) (* x x) (+ x 18))))
-
-(def f4
-  '(fn [x] (log x)))
-
-(def f5
-  '(fn [x mu sigma] (+ (- 0 (/ (* (- x mu) (- x mu))
-                              (* 2 (* sigma sigma))))
-                      (* (- 0 (/ 1 2)) (log (* 2 (* 3.141592653589793 (* sigma sigma))))))))
-
-(def f6
-  '(fn [x mu sigma] (normpdf x mu sigma)))
-
-(def f7
-  '(fn [x1 x2 x3] (+ (+ (normpdf x1 2 5)
-                       (if (> x2 7)
-                         (normpdf x2 0 1)
-                         (normpdf x2 10 1)))
-                    (normpdf x3 -4 10))))
 
 ;; Parses an anonymous function definition into an AST (the same used to manipulate
 ;; FOPPL programs).
@@ -594,10 +545,3 @@
       compute-graph
       generate-autodiff
       serialize))
-
-;; test function
-(defn verify [f & args]
-  (println "Approximation:")
-  (println [(apply (eval f) args) (apply (eval (finite-difference-grad f)) args)])
-  (println "Computed:")
-  (println (apply (eval (perform f)) args)))
