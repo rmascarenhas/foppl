@@ -65,31 +65,9 @@
 
    'log ['(fn [n] (/ 1 n))]
 
-   'normpdf ['(fn [x m s] (let [m-x (- m x)
-                               s2 (* s s)
-                               s3 (* s2 s)
-                               m-x2 (* m-x m-x)
-                               exponent (- (/ m-x2 (* 2 s2)))]
-                           (/ (* m-x (exp exponent)) (* (anglican/sqrt (* 2 Math/PI)) s3))))
-
-             '(fn [x m s] (let [x-m (- x m)
-                               m-x (- m x)
-                               s2 (* s s)
-                               s3 (* s2 s)
-                               m-x2 (* m-x m-x)
-                               exponent (- (/ m-x2 (* 2 s2)))]
-                           (/ (* x-m (exp exponent)) (* (anglican/sqrt (* 2 Math/PI)) s3))))
-
-             '(fn [x m s] (let [m-x (- m x)
-                               s-x+m (+ (- s x) m)
-                               s+x-m (- (+ s x) m)
-                               s2 (* s s)
-                               s4 (* s2 s2)
-                               m-x2 (* m-x m-x)
-                               exponent (- (/ m-x2 (* 2 s2)))]
-                           (- (/ (* s-x+m s+x-m (exp exponent)) (* (anglican/sqrt (* 2 Math/PI)) s4)))))
-             ]
-
+   'normpdf ['(fn [x m s] (* (/ (- m x) (* s s))))
+             '(fn [x m s] (* (/ (- x m) (* s s))))
+             '(fn [x m s] (/ (- (* (- x m) (- x m)) (* s s)) (* s (* s s))))]
 
    'sin ['(fn [a] (cos a))]
 
