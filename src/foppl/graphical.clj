@@ -19,6 +19,7 @@
     'beta
     'binomial
     'categorical
+    'dirac
     'dirichlet
     'discrete
     'exponential
@@ -154,7 +155,10 @@
     (utils/ice "loop constructs should have been desugared during expression scoring"))
 
   (visit-constant [{random-v :random-v} {c :n :as constant}]
-    (let [dist? (re-matches #".*anglican.runtime.(.*)-distribution" (str (class c)))]
+    (let [class-c (str (class c))
+          anglican-dist? (re-matches #".*anglican.runtime.(.*)-distribution" class-c)
+          dirac-dist? (re-matches #".*foppl.primitives.dirac-distribution" class-c)
+          dist? (or anglican-dist? dirac-dist?)]
       (cond
         dist? (ast/fn-application. 'observe* [constant random-v])
         (nil? c) constant
