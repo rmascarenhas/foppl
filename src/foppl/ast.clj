@@ -149,11 +149,17 @@
     (loops. (to-tree c) (to-tree e) f (map to-tree es))))
 
 (defn- handle-if-cond [context]
-  {:pre [(= (count context) 3)]}
+  {:pre [(or (= (count context) 2) (= (count context) 3))]}
   "If expressions: (if predicate e1 e2)"
 
-  (let [[predicate then else] context]
-    (if-cond. (to-tree predicate) (to-tree then) (to-tree else))))
+  (let [[predicate then else] context
+
+        ;; `if` expressions may or may not have an `else` expression
+        ;; as part of their definition. Lack of that clause is
+        ;; equivalent to having the `nil` constant in its place.
+        else (if else (to-tree else) (constant. nil))]
+
+    (if-cond. (to-tree predicate) (to-tree then) else)))
 
 (defn- handle-sample [context]
   {:pre [(= (count context) 1)]}

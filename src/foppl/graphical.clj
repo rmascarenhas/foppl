@@ -154,19 +154,20 @@
     (utils/ice "loop constructs should have been desugared during expression scoring"))
 
   (visit-constant [{random-v :random-v} {c :n :as constant}]
-    (let [distribution (re-matches #".*anglican.runtime.(.*)-distribution" (str (class c)))]
-      (if distribution
-        (ast/fn-application. 'observe* [constant random-v])
-        (utils/foppl-error "Not a distribution object: Score(E, v) = ⊥"))))
+    (let [dist? (re-matches #".*anglican.runtime.(.*)-distribution" (str (class c)))]
+      (cond
+        dist? (ast/fn-application. 'observe* [constant random-v])
+        (nil? c) constant
+        :else (utils/foppl-error "Not a distribution object: Score(Constant, v) = ⊥"))))
 
   (visit-variable [_ _]
-    (utils/foppl-error "Not a distribution object: Score(E, v) = ⊥"))
+    (utils/foppl-error "Not a distribution object: Score(Variable, v) = ⊥"))
 
   (visit-definition [_ _]
-    (utils/foppl-error "Not a distribution object: Score(E, v) = ⊥"))
+    (utils/foppl-error "Not a distribution object: Score(defn, v) = ⊥"))
 
   (visit-local-binding [_ _]
-    (utils/foppl-error "Not a distribution object: Score(E, v) = ⊥"))
+    (utils/foppl-error "Not a distribution object: Score(let, v) = ⊥"))
 
   (visit-if-cond [v {predicate :predicate then :then else :else}]
     (let [f2 (accept then v)
@@ -179,10 +180,10 @@
       fn-application))
 
   (visit-sample [_ _]
-    (utils/foppl-error "Not a distribution object: Score(E, v) = ⊥"))
+    (utils/foppl-error "Not a distribution object: Score(sample, v) = ⊥"))
 
   (visit-observe [_ _]
-    (utils/foppl-error "Not a distribution object: Score(E, v) = ⊥"))
+    (utils/foppl-error "Not a distribution object: Score(observe, v) = ⊥"))
   )
 
 (defn- score [e random-v]

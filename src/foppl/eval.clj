@@ -56,7 +56,7 @@
     c)
 
   (visit-variable [_ {name :name}]
-    name)
+    nil)
 
   (visit-literal-vector [_ _]
     nil)

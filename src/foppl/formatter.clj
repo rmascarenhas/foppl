@@ -53,7 +53,9 @@
     (str "(loop " (accept c v) " " (accept e v) " " (accept f v) " " (accept-coll es v) ")"))
 
   (visit-if-cond [v {predicate :predicate then :then else :else}]
-    (str "(if " (accept predicate v) " " (accept then v) " " (accept else v) ")"))
+    (let [else-str (accept else v)
+          then-else-sep (if (empty? else-str) "" " ")]
+      (str "(if " (accept predicate v) " " (accept then v) then-else-sep (accept else v) ")")))
 
   (visit-fn-application [v {name :name args :args}]
     (str "(" name (if (empty? args) "" " ") (accept-coll args v) ")"))
