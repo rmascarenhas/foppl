@@ -63,77 +63,6 @@
   (let [perform (fn [n] (accept n v))]
     (doall (map perform coll))))
 
-;; This visitor is responsible for finding out all the free variables
-;; in an expression, given a set of variables known to be bound.
-(defrecord fv-visitor [bound])
-
-;; traverses the AST starting at expressio  'e' adding 'name'
-;; to the list of variables known to be bound.
-(defn- accept-with-bound-name [name e {bound :bound}]
-  (let [visitor (fv-visitor. (set/union bound #{name}))]
-    (accept e visitor)))
-
-(extend-type fv-visitor
-  ast/visitor
-
-  (visit-literal-vector [_ _]
-    (utils/ice "literal vectors should have been desugared during free-variable visit"))
-
-  (visit-literal-map [_ _]
-    (utils/ice "literal maps should have been desugared during free-variable visit"))
-
-  (visit-foreach [_ _]
-    (utils/ice "foreach constructs should have been desugared during free-variable visit"))
-
-  (visit-loop [_ _]
-    (utils/ice "loop constructs should have been desugared during free-variable visit"))
-
-  (visit-constant [v {c :n}]
-    (cond
-      ;; if the constant holds a collection of elements, recursively traverse
-      ;; each element of the collection treating each of them as a constant element
-      (coll? c) (apply set/union (map (fn [el] (accept (ast/constant. el) v)) c))
-
-      ;; if the constant is a symbol (name of an random variable generated
-      ;; by previous partial evaluation, add that to the set of free variables.
-      (symbol? c) #{c}
-      :else #{}))
-
-  (visit-variable [{bound :bound} {name :name}]
-    (if (contains? bound name)
-      #{}
-      #{name}))
-
-  (visit-definition [v {name :name args :args e :e}]
-    (utils/foppl-error "function definitions should not be in FOPPL expressions"))
-
-  (visit-local-binding [{name :name :as v} {bindings :bindings es :es}]
-    {:pre [(= (count bindings) 2) (= (count es) 1)]}
-
-    (let [bound-var (first bindings)
-          bound-name (:name bound-var)
-          bound-val (last bindings)
-          e (first es)]
-      (set/union (accept bound-val v) (accept-with-bound-name bound-name e v))))
-
-  (visit-if-cond [v {predicate :predicate then :then else :else}]
-    (set/union (accept predicate v) (accept then v) (accept else v)))
-
-  (visit-fn-application [v {args :args}]
-    (apply set/union (accept-coll args v)))
-
-  (visit-sample [v {dist :dist}]
-    (accept dist v))
-
-  (visit-observe [v {dist :dist val :val}]
-    (set/union (accept dist v) (accept val v)))
-  )
-
-(defn- fv [e]
-  "Returns a set of free variables contained in expression 'e'"
-  (let [visitor (fv-visitor. #{})]
-    (accept e visitor)))
-
 ;; The score visitor returns an AST node that corresponds to the SCORE function
 ;; (as described in the book) for a certain AST node. Score functions are based
 ;; on a random variable generated when sampling or observing a distribution.
@@ -373,7 +302,7 @@
 
           ;; find the set of free variables of the deterministic
           ;; expression representing the distribution
-          free-vars (fv deterministic-dist)
+          free-vars (ast/free-vars deterministic-dist)
 
           ;; find the probability density function of the distribution
           ;; being sampled, given by the SCORE function
@@ -427,11 +356,11 @@
 
           ;; let Z be the set of free variables in f excluding the fresh
           ;; variable created
-          z (set/difference (fv f) #{random-v})
+          z (set/difference (ast/free-vars f) #{random-v})
 
           ;; validation step: ensure that the observed value has no random
           ;; variables in it (i.e., it is deterministic)
-          _ (when-not (empty? (set/intersection (fv e2) V)) (utils/foppl-error "observed value is not deterministic"))
+          _ (when-not (empty? (set/intersection (ast/free-vars e2) V)) (utils/foppl-error "observed value is not deterministic"))
 
           ;; creates a collection of mappings from free-variables to the
           ;; random variable created

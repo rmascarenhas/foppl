@@ -1,6 +1,7 @@
 (ns foppl.ast
   "Defines AST data structures and visitor protocol."
   (:require [foppl.utils :as utils]
+            [clojure.set :as set]
             [clojure.edn :as edn]))
 
 ;; ================================================================ ;;
@@ -343,6 +344,72 @@
     (observe. (accept dist v) (accept val v)))
   )
 
+;; This visitor is responsible for finding out all the free variables
+;; in an expression, given a set of variables known to be bound.
+(defrecord fv-visitor [bound])
+
+;; traverses the AST starting at expressio 'e' adding 'name'
+;; to the list of variables known to be bound.
+(defn- accept-with-bound-name [name e {bound :bound}]
+  (let [visitor (fv-visitor. (set/union bound #{name}))]
+    (accept e visitor)))
+
+(extend-type fv-visitor
+  visitor
+
+  (visit-literal-vector [_ _]
+    (utils/ice "literal vectors should have been desugared during free-variable visit"))
+
+  (visit-literal-map [_ _]
+    (utils/ice "literal maps should have been desugared during free-variable visit"))
+
+  (visit-foreach [_ _]
+    (utils/ice "foreach constructs should have been desugared during free-variable visit"))
+
+  (visit-loop [_ _]
+    (utils/ice "loop constructs should have been desugared during free-variable visit"))
+
+  (visit-constant [v {c :n}]
+    (cond
+      ;; if the constant holds a collection of elements, recursively traverse
+      ;; each element of the collection treating each of them as a constant element
+      (coll? c) (apply set/union (map (fn [el] (accept (constant. el) v)) c))
+
+      ;; if the constant is a symbol (name of an random variable generated
+      ;; by previous partial evaluation, add that to the set of free variables.
+      (symbol? c) #{c}
+      :else #{}))
+
+  (visit-variable [{bound :bound} {name :name}]
+    (if (contains? bound name)
+      #{}
+      #{name}))
+
+  (visit-definition [v {name :name args :args e :e}]
+    (utils/foppl-error "function definitions should not be in FOPPL expressions"))
+
+  (visit-local-binding [{name :name :as v} {bindings :bindings es :es}]
+    {:pre [(= (count bindings) 2) (= (count es) 1)]}
+
+    (let [bound-var (first bindings)
+          bound-name (:name bound-var)
+          bound-val (last bindings)
+          e (first es)]
+      (set/union (accept bound-val v) (accept-with-bound-name bound-name e v))))
+
+  (visit-if-cond [v {predicate :predicate then :then else :else}]
+    (set/union (accept predicate v) (accept then v) (accept else v)))
+
+  (visit-fn-application [v {args :args}]
+    (apply set/union (accept-coll args v)))
+
+  (visit-sample [v {dist :dist}]
+    (accept dist v))
+
+  (visit-observe [v {dist :dist val :val}]
+    (set/union (accept dist v) (accept val v)))
+  )
+
 ;; ================================================================ ;;
 ;;                       PUBLIC FUNCTIONS                           ;;
 ;; ================================================================ ;;
@@ -366,6 +433,11 @@
   Returns a modified AST subtree."
   (let [visitor (substitution-visitor. name e)]
     (accept target visitor)))
+
+(defn free-vars [e]
+  "Returns a set of free variables contained in expression 'e'"
+  (let [visitor (fv-visitor. #{})]
+    (accept e visitor)))
 
 (defn fresh-sym
   "Returns an unused symbol that can be used during the compilation pipeline to stand
