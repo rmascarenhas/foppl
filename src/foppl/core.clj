@@ -8,6 +8,7 @@
             [foppl.scope :as scope]
             [foppl.desugar :as desugar]
             [foppl.graphical :as graphical]
+            [foppl.mh_gibbs :as gibbs]
             [foppl.operations :as operations])
   (:gen-class))
 
@@ -59,6 +60,7 @@
           desugar/perform
           scope/perform
           graphical/perform
+          gibbs/perform
           operations/print-graph)
       (catch clojure.lang.ExceptionInfo e
         (let [type (-> e ex-data :type)

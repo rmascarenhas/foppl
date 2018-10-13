@@ -32,7 +32,7 @@
         no-java-classes (fn [f] (= (s/lower-case f) f))
 
         ;; remove 'earmuffed' variables (i.e., no dynamic binding)
-        no-earmuffs (fn [f] (complement (s/includes? f "*")))
+        no-earmuffs (fn [f] (complement (re-matches #"\*.*\*" f)))
 
         ;; do not evaluate a set of 'forbidden' core functions
         contains-forbidden (fn [f] (contains? forbidden-core-functions (symbol f)))
