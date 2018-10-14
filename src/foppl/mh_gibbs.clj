@@ -3,11 +3,60 @@
   the posterior of the distribution represented by a graphical model."
   (:require [clojure.set :as set]
             [anglican.runtime :as anglican]
-            [foppl.ast :as ast]
+            [foppl.ast :as ast :refer [accept]]
             [foppl.eval :as eval]
             [foppl.toposort :as toposort]
             [foppl.utils :as utils])
   (:import [foppl.ast constant fn-application]))
+
+;; evaluates a function expression recursively until it can ultimately
+;; be represented as a constant value. Basically wraps calls to
+;; `eval/peval`, which only applies functions if all arguments are
+;; constants (which is the case during graphical model compilation,
+;; but not here).
+(defrecord deep-eval-visitor [])
+
+(extend-type deep-eval-visitor
+  ast/visitor
+
+  (visit-constant [_ c]
+    c)
+
+  (visit-variable [_ var]
+    var)
+
+  (visit-literal-vector [_ literal-vector]
+    literal-vector)
+
+  (visit-literal-map [_ literal-map]
+    literal-map)
+
+  (visit-definition [_ definition]
+    definition)
+
+  (visit-local-binding [_ local-binding]
+    local-binding)
+
+  (visit-foreach [_ foreach]
+    foreach)
+
+  (visit-loop [_ loop]
+    loop)
+
+  (visit-if-cond [_ if-cond]
+    (if-cond))
+
+  (visit-fn-application [v {name :name args :args}]
+    (let [evaluated-args (map (fn [n] (accept n v)) args)
+          f (ast/fn-application. name evaluated-args)]
+      (eval/peval f)))
+
+  (visit-sample [_ sample]
+    sample)
+
+  (visit-observe [_ observe]
+    observe)
+  )
 
 (defn- latent-vars [{V :V Y :Y}]
   "Given the graph component of a graphical model, this function
@@ -100,10 +149,9 @@
         ;; the distribution object obtained by performing the
         ;; substitutions contained in `values` and evaluating the
         ;; resulting exression
-        pdf-at (fn [pdf values] (let [{name :name args :args} (substitute-coll pdf values)
-                                     evaluated-args (map eval/peval args)
-                                     pdf-fn (ast/fn-application. name evaluated-args)]
-                                 (:n (eval/peval pdf-fn))))
+        pdf-at (fn [pdf values] (let [f (substitute-coll pdf values)
+                                     dist-constant (accept f (deep-eval-visitor.))]
+                                 (:n dist-constant)))
 
         ;; this function is responsible for calculating the log-a
         ;; component according to the formula that defines the
@@ -237,10 +285,15 @@
         ;; burn-in state: run the algorithm a number of times to make
         ;; sure we get a set of variable assignments that are "within"
         ;; the posterior distribution
-        {burned-in :xs} (gibbs 100000 xs)
+        {burned-in :xs} (gibbs 5000 xs)
 
         ;; perform a number of iterations using as initial assignment
         ;; the last set of assignments obtained during the burn-in
         ;; phase.
-        {samples :data} (gibbs 20000 burned-in)]
+        {samples :data} (gibbs 500 burned-in)
+        grouped (with-latent (repeat []))
+        grouped (reduce (fn [m kv] (reduce (fn [m' [k v]] (assoc m' k (conj (get m' k) v))) m kv)) grouped samples)
+
+        expected (reduce-kv (fn [m k v] (assoc m k (anglican/mean v))) {} grouped)]
+    (println "Expected:" expected)
     model))
