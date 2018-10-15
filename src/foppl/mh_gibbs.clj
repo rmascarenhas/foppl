@@ -43,8 +43,10 @@
   (visit-loop [_ loop]
     loop)
 
-  (visit-if-cond [_ if-cond]
-    (if-cond))
+  (visit-if-cond [v {predicate :predicate then :then else :else}]
+    (let [{b :n} (accept predicate v)
+          branch (if b then else)]
+      (accept branch v)))
 
   (visit-fn-application [v {name :name args :args}]
     (let [evaluated-args (map (fn [n] (accept n v)) args)
@@ -122,6 +124,24 @@
         ;; set of assignments
         c (get xs x)
         c' (get xs' x)
+
+        ;; Fix bad guess at the distribution's support: Initially,
+        ;; Gibbs is started with a scalar number assigned to each
+        ;; random variable. However, depending on the distribution,
+        ;; some random variables will have samples that draw a vector
+        ;; of numbers (e.g., dirichlet) or boolean values (e.g.,
+        ;; bernoulli). The checks below make sure that, if the initial
+        ;; value `c` is of different type than the sampled value `c'`,
+        ;; then `c` is changed to be of the same type as `c'`, with
+        ;; small variations (incremented in case of collections of
+        ;; numbers, and negated in case of boolean values).
+        c (if (and (seq? c') (number? c)) (map inc c') c)
+        xs (assoc xs x c)
+
+        boolean? (fn [e] (or (= e true) (= e false)))
+        c (if (and (boolean? c') (number? c)) (not c') c)
+        xs (assoc xs x c)
+
         log-a (- (log-prob d' c) (log-prob d c'))
 
         ;; calculate a map from {random-variable name -> set of free
@@ -144,6 +164,10 @@
                                      e
                                      subs))
 
+        ;; maps observed random variables names to the raw
+        ;; constant value that was observed
+        observations (zipmap (keys Y) (map :n (vals Y)))
+
         ;; This function takes an AST node representing the PDF of a
         ;; certain distribution and a map of values, and then returns
         ;; the distribution object obtained by performing the
@@ -158,10 +182,6 @@
         ;; Metropolis-within-Gibbs algorithm.
         evaluate-proposals (fn [log-a v] (let [ ;; the PDF function associated with vertex `v`
                                               pdf (get P v)
-
-                                              ;; maps observed random variables names to the raw
-                                              ;; constant value that was observed
-                                              observations (zipmap (keys Y) (map :n (vals Y)))
 
                                               ;; calculate current and proposed map of random
                                               ;; variable assignments
@@ -274,7 +294,7 @@
 
         ;; initial random-variable assignment to get the process
         ;; started
-        xs (with-latent (repeat 0.0))
+        xs (with-latent (repeat 1))
 
         ;; run the Metropolis-within-Gibbs algorithm for `n`
         ;; iterations, given the initial assignment of random

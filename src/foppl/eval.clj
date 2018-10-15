@@ -91,7 +91,7 @@
 
 (defn- raw-constants [coll]
   (let [visitor (raw-visitor.)
-        raw(fn [n] (accept n visitor))]
+        raw (fn [n] (accept n visitor))]
     (map raw coll)))
 
 (defn- safe-apply [f args default]
@@ -167,14 +167,38 @@
           valid-args? (and valid-data-structure-args? (every? (comp not nil?) raw-arguments))
 
           ;; if the function is resolved, it can be safely evaluated
-          resolved? (and valid? builtin valid-args?)]
+          resolved? (and valid? builtin valid-args?)
+
+          ;; is the function being invoked a logical operator? (only
+          ;; `and` and `or` currently supported)
+          logical-op? (or (= name 'and) (= name 'or))
+
+          ;; if this logical `op` is `and` and any of the arguments is `false`,
+          ;; short circuit to `false`; similarly for `or` and `true`.
+          try-simplify (fn [op args e]
+                         (cond
+                           (= op 'and) (if (some (fn [a] (= a false)) args) (ast/constant. false) e)
+                           (= op 'or) (if (some (fn [a] (= a true)) args) (ast/constant. true) e)))]
 
       ;; if the function is resolved, return an AST node for a constant
       ;; holding the result of the evaluation. Otherwise, leave the
       ;; expression unchanged
-      (if resolved?
-        (safe-apply builtin raw-arguments fn-application)
-        fn-application)))
+      (cond
+        ;; if this is a resolved function application, call the
+        ;; function as usual with the constant value parameters
+        ;; obtained above.
+        resolved? (safe-apply builtin raw-arguments fn-application)
+
+        ;; optimization for logical operators: even if the expression
+        ;; has free variables, we know that `(and true e1 e2)`
+        ;; evaluates to `true` regardless of `e1`, `e2`.  A similar
+        ;; rationale exists for `or`. Try to simplify these cases when
+        ;; possible.
+        logical-op? (try-simplify name raw-arguments fn-application)
+
+        ;; if all else fails, returns the unmodified function
+        ;; application node.
+        :else fn-application)))
 
   (visit-sample [_ sample]
     sample)

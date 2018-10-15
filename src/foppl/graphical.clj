@@ -11,27 +11,6 @@
   (:import [foppl.ast constant variable literal-vector literal-map fn-application definition
             local-binding foreach loops if-cond sample observe program]))
 
-;; lists all of the known/expected distribution function supported by FOPPL.
-;; This list of distributionns was extracted from those supported by Anglican,
-;; on which this implementation depends.
-(def ^:private distributions
-  #{'bernoulli
-    'beta
-    'binomial
-    'categorical
-    'dirac
-    'dirichlet
-    'discrete
-    'exponential
-    'flip
-    'gamma
-    'normal
-    'poisson
-    'uniform-continuous
-    'uniform-discrete
-    'wishart
-    })
-
 ;; represents a graph, where:
 ;;     - V is the set of vertices (random variables) of the graph
 ;;     - A is the set of edges and is a subset of V x V
@@ -108,9 +87,7 @@
       (ast/if-cond. predicate f2 f3)))
 
   (visit-fn-application [{random-v :random-v} {name :name args :args :as fn-application}]
-    (if (contains? distributions name)
-      (ast/fn-application. 'observe* [(ast/fn-application. name args) random-v])
-      fn-application))
+    (ast/fn-application. 'observe* [(ast/fn-application. name args) random-v]))
 
   (visit-sample [_ _]
     (utils/foppl-error "Not a distribution object: Score(sample, v) = ⊥"))
