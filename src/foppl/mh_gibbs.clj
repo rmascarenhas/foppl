@@ -303,3 +303,41 @@
         next-sample (fn [xs] (:xs (gibbs 1 xs)))]
 
     (gibbs-lazy-seq burned-in next-sample)))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Temporary code -- delete after marking is done ;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn- path->model [path]
+  (let [fd (clojure.java.io/reader path)
+        stream (java.io.PushbackReader. fd)]
+    (->> stream
+         ast/read-source
+         foppl.validation/perform
+         foppl.desugar/perform
+         foppl.scope/perform
+         foppl.graphical/perform)))
+
+(defn test-p1 []
+  (let [model (path->model "/home/rmc/Documents/canada/ubc/cw/2018.fall/539/foppl/resources/examples/gibbs/p1.foppl")
+        samples-seq (perform model)
+        mu (:name (:E model))
+        samples (take 10000 samples-seq)
+        values (map (fn [m] (get m mu)) samples)
+        mean (anglican/mean values)]
+    (println "Expected value of mu:" mean)))
+
+(defn test-p2 []
+  (let [model (path->model "/home/rmc/Documents/canada/ubc/cw/2018.fall/539/foppl/resources/examples/gibbs/p2.foppl")
+        samples-seq (perform model)
+        [slope bias] (map :name (:args (:E model)))
+        samples (take 5000 samples-seq)
+
+        slope-values (map (fn [m] (get m slope)) samples)
+        slope-mean (anglican/mean slope-values)
+
+        bias-values (map (fn [m] (get m bias)) samples)
+        bias-mean (anglican/mean bias-values)]
+    (println "Expected value of slope:" slope-mean)
+    (println "Expected value of bias:" bias-mean)))
