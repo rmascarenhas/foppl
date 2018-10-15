@@ -54,14 +54,15 @@
         fd (if (= path "-") *in*  (io/reader path))
         stream (java.io.PushbackReader. fd)]
     (try
-      (-> stream
-          ast/read-source
-          validation/perform
-          desugar/perform
-          scope/perform
-          graphical/perform
-          gibbs/perform
-          operations/print-graph)
+      (->> stream
+           ast/read-source
+           validation/perform
+           desugar/perform
+           scope/perform
+           graphical/perform
+           gibbs/perform
+           (take 3)
+           println)
       (catch clojure.lang.ExceptionInfo e
         (let [type (-> e ex-data :type)
               msg (-> (.getMessage e))]

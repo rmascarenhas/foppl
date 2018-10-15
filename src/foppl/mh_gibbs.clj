@@ -242,6 +242,14 @@
     ;; `xs`. Returns the updated random-variable assignment.
     (reduce propose-accept xs random-vars)))
 
+(defn- gibbs-lazy-seq [initial gen-fn]
+  "Generates a lazy sequence for an initial map of
+  assignments. `gen-fn` is supposed to be a function that takes a map
+  of assignments, and returns an updated map of assignments as a
+  result of running a single step of the Gibbs algorithm."
+  (let [next (gen-fn initial)]
+    (lazy-seq (cons next (gibbs-lazy-seq next gen-fn)))))
+
 (defn perform [{{A :A Y :Y P :P :as graph} :G :as model}]
   "Performs sampling of the posterior distribution of latent variables
   represented by a graphical model. Returns a lazy sequence of samples
@@ -285,15 +293,13 @@
         ;; burn-in state: run the algorithm a number of times to make
         ;; sure we get a set of variable assignments that are "within"
         ;; the posterior distribution
-        {burned-in :xs} (gibbs 5000 xs)
+        {burned-in :xs} (gibbs 10000 xs)
 
-        ;; perform a number of iterations using as initial assignment
-        ;; the last set of assignments obtained during the burn-in
-        ;; phase.
-        {samples :data} (gibbs 500 burned-in)
-        grouped (with-latent (repeat []))
-        grouped (reduce (fn [m kv] (reduce (fn [m' [k v]] (assoc m' k (conj (get m' k) v))) m kv)) grouped samples)
+        ;; the `gibbs` helper function defined above is a lot more
+        ;; general and is able to run `n` gibbs steps. However, in
+        ;; order to generate our lazy sequence, we write a wrapper for
+        ;; it that, given a map of assignments, produces a new map of
+        ;; assignments as a result of running a single gibbs step
+        next-sample (fn [xs] (:xs (gibbs 1 xs)))]
 
-        expected (reduce-kv (fn [m k v] (assoc m k (anglican/mean v))) {} grouped)]
-    (println "Expected:" expected)
-    model))
+    (gibbs-lazy-seq burned-in next-sample)))
