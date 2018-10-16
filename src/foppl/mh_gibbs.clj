@@ -343,7 +343,7 @@
   (let [model (path->model "/home/rmc/Documents/canada/ubc/cw/2018.fall/539/foppl/resources/examples/gibbs/p1.foppl")
         samples-seq (perform model)
         mu (:name (:E model))
-        samples (take 10000 samples-seq)
+        samples (take 200000 samples-seq)
         values (map (fn [m] (get m mu)) samples)
         mean (anglican/mean values)]
     (println "Expected value of mu:" mean)))
@@ -352,7 +352,7 @@
   (let [model (path->model "/home/rmc/Documents/canada/ubc/cw/2018.fall/539/foppl/resources/examples/gibbs/p2.foppl")
         samples-seq (perform model)
         [slope bias] (map :name (:args (:E model)))
-        samples (take 5000 samples-seq)
+        samples (take 200000 samples-seq)
 
         slope-values (map (fn [m] (get m slope)) samples)
         slope-mean (anglican/mean slope-values)
@@ -361,3 +361,17 @@
         bias-mean (anglican/mean bias-values)]
     (println "Expected value of slope:" slope-mean)
     (println "Expected value of bias:" bias-mean)))
+
+(defn test-p4 []
+  (let [model (path->model "/home/rmc/Documents/canada/ubc/cw/2018.fall/539/foppl/resources/examples/gibbs/p4.foppl")
+        samples-seq (perform model)
+
+        ;; destructure deterministic expression to get name of
+        ;; 'is-cloudy' and the two related branches of the conditional
+        {{[{is-cloudy :name} _] :args} :predicate {then :name} :then {else :name} :else} (:E model)
+
+        samples (take 200000 samples-seq)
+        is-raining-values (map (fn [m] (if (get m is-cloudy) (get m then) (get m else))) samples)
+        prob-is-raining (/ (count (filter identity is-raining-values)) (count samples))]
+
+    (println "Probability that it is raining:" (float prob-is-raining))))
