@@ -10,27 +10,6 @@
             [foppl.utils :as utils])
   (:import [foppl.ast constant variable literal-vector literal-map fn-application definition
             local-binding foreach loops if-cond sample observe program]))
-
-;; lists all of the known/expected distribution function supported by FOPPL.
-;; This list of distributionns was extracted from those supported by Anglican,
-;; on which this implementation depends.
-(def ^:private distributions
-  #{'bernoulli
-    'beta
-    'binomial
-    'categorical
-    'dirichlet
-    'discrete
-    'exponential
-    'flip
-    'gamma
-    'normal
-    'poisson
-    'uniform-continuous
-    'uniform-discrete
-    'wishart
-    })
-
 ;; represents a graph, where:
 ;;     - V is the set of vertices (random variables) of the graph
 ;;     - A is the set of edges and is a subset of V x V
@@ -61,59 +40,6 @@
   the visitor to all elements of the collection."
   (let [perform (fn [n] (accept n v))]
     (doall (map perform coll))))
-
-;; modifies an expression in FOPPL's deterministic language replacing
-;; calls to distribution functions (e.g., `normal`) to fully qualified
-;; function names (`anglican.runtime/normal`). This is so that
-;; expressions generated in the graphical model's link functions can
-;; be evaluated in arbitrary environments without having to refer to
-;; `anglican.runtime` functions.
-(defrecord anglican-qualify-visitor [])
-
-(extend-type anglican-qualify-visitor
-  ast/visitor
-
-  (visit-literal-vector [_ _]
-    (utils/ice "literal vectors should have been desugared during Anglican qualification"))
-
-  (visit-literal-map [_ _]
-    (utils/ice "literal maps should have been desugared during Anglican qualification"))
-
-  (visit-foreach [_ _]
-    (utils/ice "foreach constructs should have been desugared during Anglican qualification"))
-
-  (visit-loop [_ _]
-    (utils/ice "loop constructs should have been desugared during Anglican qualification"))
-
-  (visit-constant [_ c]
-    c)
-
-  (visit-variable [_ variable]
-    variable)
-
-  (visit-definition [_ defnition]
-    (utils/ice "No definitions allowed in determistic language (during Anglican qualification)"))
-
-  (visit-local-binding [_ _]
-    (utils/ice "No local bindings allowed in deterministic language (during Anglican qualification)"))
-
-  (visit-if-cond [v {predicate :predicate then :then else :else}]
-    (let [qualified-predicate (accept predicate v)
-          qualified-then (accept then v)
-          qualified-else (accept else v)]
-      (ast/if-cond. qualified-predicate qualified-then qualified-else)))
-
-  (visit-fn-application [v {name :name args :args}]
-    (let [fn-name (if (contains? distributions name) (symbol (str "anglican.runtime/" name)) name)
-          qualified-args (map (fn [n] (accept n v)) args)]
-      (ast/fn-application. fn-name qualified-args)))
-
-  (visit-sample [_ _]
-    (utils/foppl-error "Not a distribution object: Score(sample, v) = ⊥"))
-
-  (visit-observe [_ _]
-    (utils/foppl-error "Not a distribution object: Score(observe, v) = ⊥"))
-  )
 
 ;; The score visitor returns an AST node that corresponds to the SCORE function
 ;; (as described in the book) for a certain AST node. Score functions are based
@@ -160,9 +86,7 @@
       (ast/if-cond. predicate f2 f3)))
 
   (visit-fn-application [{random-v :random-v} {name :name args :args :as fn-application}]
-    (let [qualify-v (anglican-qualify-visitor.)
-          qualified-fn (accept fn-application qualify-v)]
-      (ast/fn-application. 'anglican.runtime/observe* [qualified-fn random-v])))
+    (ast/fn-application. 'anglican.runtime/observe* [fn-application random-v]))
 
   (visit-sample [_ _]
     (utils/foppl-error "Not a distribution object: Score(sample, v) = ⊥"))

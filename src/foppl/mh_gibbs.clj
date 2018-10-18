@@ -7,9 +7,83 @@
             [foppl.ast :as ast :refer [accept]]
             [foppl.eval :as eval]
             [foppl.formatter :as formatter]
+            [foppl.operations :as operations]
             [foppl.toposort :as toposort]
             [foppl.utils :as utils])
   (:import [foppl.ast constant variable if-cond fn-application definition]))
+
+;; lists all of the known/expected distribution function supported by FOPPL.
+;; This list of distributionns was extracted from those supported by Anglican,
+;; on which this implementation depends.
+(def ^:private distributions
+  #{'bernoulli
+    'beta
+    'binomial
+    'categorical
+    'dirichlet
+    'discrete
+    'exponential
+    'flip
+    'gamma
+    'normal
+    'poisson
+    'uniform-continuous
+    'uniform-discrete
+    'wishart
+    })
+
+;; modifies an expression in FOPPL's deterministic language replacing
+;; calls to distribution functions (e.g., `normal`) to fully qualified
+;; function names (`anglican.runtime/normal`). This is so that
+;; expressions generated in the graphical model's link functions can
+;; be evaluated in arbitrary environments without having to refer to
+;; `anglican.runtime` functions.
+(defrecord anglican-qualify-visitor [])
+
+(extend-type anglican-qualify-visitor
+  ast/visitor
+
+  (visit-literal-vector [_ _]
+    (utils/ice "literal vectors should have been desugared during Anglican qualification"))
+
+  (visit-literal-map [_ _]
+    (utils/ice "literal maps should have been desugared during Anglican qualification"))
+
+  (visit-foreach [_ _]
+    (utils/ice "foreach constructs should have been desugared during Anglican qualification"))
+
+  (visit-loop [_ _]
+    (utils/ice "loop constructs should have been desugared during Anglican qualification"))
+
+  (visit-constant [_ c]
+    c)
+
+  (visit-variable [_ variable]
+    variable)
+
+  (visit-definition [_ defnition]
+    (utils/ice "No definitions allowed in determistic language (during Anglican qualification)"))
+
+  (visit-local-binding [_ _]
+    (utils/ice "No local bindings allowed in deterministic language (during Anglican qualification)"))
+
+  (visit-if-cond [v {predicate :predicate then :then else :else}]
+    (let [qualified-predicate (accept predicate v)
+          qualified-then (accept then v)
+          qualified-else (accept else v)]
+      (ast/if-cond. qualified-predicate qualified-then qualified-else)))
+
+  (visit-fn-application [v {name :name args :args}]
+    (let [fn-name (if (contains? distributions name) (symbol (str "anglican.runtime/" name)) name)
+          qualified-args (map (fn [n] (accept n v)) args)]
+      (ast/fn-application. fn-name qualified-args)))
+
+  (visit-sample [_ _]
+    (utils/foppl-error "Not a distribution object: Score(sample, v) = ⊥"))
+
+  (visit-observe [_ _]
+    (utils/foppl-error "Not a distribution object: Score(observe, v) = ⊥"))
+  )
 
 ;; Extracts all constants from an expression, substituting them for
 ;; access to a map (of name `constants` given). For example, the
@@ -312,6 +386,12 @@
                                  ;; as function calls and recomputed on every application of the
                                  ;; generated function.
                                  [link constants] (extract-constants n constants-map-name)
+
+                                 ;; fully qualify distribution functions so that the link function
+                                 ;; can be compiled to a Clojure anonymous function regardless of
+                                 ;; the functions referred in this namespace
+                                 anglican-qualify (fn [n] (accept n (anglican-qualify-visitor.)))
+                                 link (anglican-qualify link)
 
                                  ;; parameter to be passed to the anonymous function
                                  assignments (ast/variable. m)
