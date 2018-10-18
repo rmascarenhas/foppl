@@ -2,63 +2,91 @@
   "Implements the Metropolis-within-Gibbs algorithm for the sampling of
   the posterior of the distribution represented by a graphical model."
   (:require [clojure.set :as set]
+            [clojure.edn :as edn]
             [anglican.runtime :as anglican]
             [foppl.ast :as ast :refer [accept]]
             [foppl.eval :as eval]
+            [foppl.formatter :as formatter]
             [foppl.toposort :as toposort]
             [foppl.utils :as utils])
-  (:import [foppl.ast constant fn-application]))
+  (:import [foppl.ast constant variable if-cond fn-application definition]))
 
-;; evaluates a function expression recursively until it can ultimately
-;; be represented as a constant value. Basically wraps calls to
-;; `eval/peval`, which only applies functions if all arguments are
-;; constants (which is the case during graphical model compilation,
-;; but not here).
-(defrecord deep-eval-visitor [])
+;; Extracts all constants from an expression, substituting them for
+;; access to a map (of name `constants` given). For example, the
+;; expression:
+;;
+;;      (inc 1)
+;;
+;; is transformed by this visitor to:
+;;
+;;     [(inc (get constants-1234 (symbol "constant-4321"))), {constant-4321 1}]
+;;
+;; This is useful to avoid recalculating some constant values such as
+;; distributions.  See usage of this visitor in the `perform`
+;; function.
+(defrecord constant-extract-visitor [registry constants])
 
-(extend-type deep-eval-visitor
+(extend-type constant-extract-visitor
   ast/visitor
 
-  (visit-constant [_ c]
-    c)
+  (visit-constant [{registry :registry constants :constants} {c :n}]
+    (let [;; generate a new name for the constant
+          name (ast/fresh-sym "c")
+          s-name (ast/fn-application. 'symbol [(ast/constant. (str name))])
 
-  (visit-variable [_ var]
-    var)
+          ;; replace the constant with a function to `get` on the map
+          ;; of constants
+          get-constant (ast/fn-application. 'get [constants s-name])]
 
-  (visit-literal-vector [_ literal-vector]
-    literal-vector)
+      ;; add the value of the constant to the registry
+      [get-constant (assoc registry name c)]))
 
-  (visit-literal-map [_ literal-map]
-    literal-map)
+  (visit-variable [{registry :registry} var]
+    [var registry])
 
-  (visit-definition [_ definition]
-    definition)
+  (visit-literal-vector [{registry :registry} literal-vector]
+    [literal-vector registry])
 
-  (visit-local-binding [_ local-binding]
-    local-binding)
+  (visit-literal-map [{registry :registry} literal-map]
+    [literal-map registry])
 
-  (visit-foreach [_ foreach]
-    foreach)
+  (visit-definition [{registry :registry} definition]
+    [definition registry])
 
-  (visit-loop [_ loop]
-    loop)
+  (visit-local-binding [{registry :registry} local-binding]
+    [local-binding registry])
 
-  (visit-if-cond [v {predicate :predicate then :then else :else}]
-    (let [{b :n} (accept predicate v)
-          branch (if b then else)]
-      (accept branch v)))
+  (visit-foreach [{registry :registry} foreach]
+    [foreach registry])
 
-  (visit-fn-application [v {name :name args :args}]
-    (let [evaluated-args (map (fn [n] (accept n v)) args)
-          f (ast/fn-application. name evaluated-args)]
-      (eval/peval f)))
+  (visit-loop [{registry :registry} loop]
+    [loop registry])
 
-  (visit-sample [_ sample]
-    sample)
+  (visit-if-cond [{registry :registry :as v} {predicate :predicate then :then else :else}]
+    (let [[predicate-e predicate-r] (accept predicate v)
+          [then-e then-r] (accept then v)
+          [else-e else-r] (accept else v)]
+      [(ast/if-cond. predicate-e then-e else-e) (merge registry predicate-r then-r else-r)]))
 
-  (visit-observe [_ observe]
-    observe)
+  (visit-fn-application [{registry :registry :as v} {name :name args :args}]
+    (let [pairs (map (fn [n] (accept n v)) args)
+          args-e (map first pairs)
+          registries (map second pairs)]
+      [(ast/fn-application. name args-e) (apply merge (cons registry registries))]))
+
+  (visit-sample [{registry :registry} sample]
+    [sample registry])
+
+  (visit-observe [{registry :registry} observe]
+    [observe registry])
   )
+
+(defn- extract-constants [n map-name]
+  "Given an AST node `n` and a fresh name `map-name`, this will
+  substitute constant values in the AST by fresh names, and return a
+  map from names to constant values."
+  (let [visitor (constant-extract-visitor. {} (ast/variable. map-name))]
+    (accept n visitor)))
 
 (defn- latent-vars [{V :V Y :Y}]
   "Given the graph component of a graphical model, this function
@@ -78,30 +106,12 @@
   (anglican/observe* dist v))
 
 (defn- eval-proposal [proposal xs]
-  "Evaluates a `proposal`, given as an AST representation of a
-  distribution expression, under the map of random variable values
-  `xs`. In other words, each random variable in the `proposal`
-  expression is substituted for its corresponding value in the `xs`
-  maop, and the expression is then evaluated. The function returns an
-  Anglicna distribution object that results from the evaluation."
-  (let [vars (keys xs)
+  "Evaluates a proposal distribution under a given set of assignments
+  `xs`. The proposal is expected to be given as an anonymous function
+  that can be directly invoked."
+  (proposal xs))
 
-        ;; helper function to construct a constant AST node for a
-        ;; random-variable with the name given, based on its value in
-        ;; the `xs` map.
-        constant-for (fn [name] (ast/constant. (get xs name)))
-        substitute (fn [e name] (ast/substitute name (constant-for name) e))
-
-        ;; substitute each random-variable in `xs` in the `proposal`
-        ;; expression.  The resulting expression should have no free
-        ;; variables at the end of this process.
-        bound-proposal (reduce substitute proposal vars)
-        const-dist (eval/peval bound-proposal)]
-
-    ;; return the raw Anglican distribution object from the evaluation
-    (:n const-dist)))
-
-(defn- choose-proposal [{V :V P :P Y :Y} proposals x xs xs']
+(defn- choose-proposal [{V :V P :P Y :Y} compiled-P proposals x xs xs']
   "This function decides whether to accept a new assignment of random
   variables `xs'` or to maintain the current assignment `xs`. The
   first argument is the graph component of a graphical model, and
@@ -159,29 +169,20 @@
         ;; given an expression `e`, this performs a sequence of
         ;; substitutions based on the `subs` map from names to
         ;; constants. Returns the resulting expression
-        substitute-coll (fn [e subs] (reduce
-                                     (fn [e [name const]] (ast/substitute name (ast/constant. const) e))
-                                     e
-                                     subs))
+        ;; substitute-coll (fn [e subs] (reduce
+        ;;                              (fn [e [name const]] (ast/substitute name (ast/constant. const) e))
+        ;;                              e
+        ;;                              subs))
 
         ;; maps observed random variables names to the raw
         ;; constant value that was observed
         observations (zipmap (keys Y) (map :n (vals Y)))
 
-        ;; This function takes an AST node representing the PDF of a
-        ;; certain distribution and a map of values, and then returns
-        ;; the distribution object obtained by performing the
-        ;; substitutions contained in `values` and evaluating the
-        ;; resulting exression
-        pdf-at (fn [pdf values] (let [f (substitute-coll pdf values)
-                                     dist-constant (accept f (deep-eval-visitor.))]
-                                 (:n dist-constant)))
-
         ;; this function is responsible for calculating the log-a
         ;; component according to the formula that defines the
         ;; Metropolis-within-Gibbs algorithm.
         evaluate-proposals (fn [log-a v] (let [ ;; the PDF function associated with vertex `v`
-                                              pdf (get P v)
+                                              pdf (get compiled-P v)
 
                                               ;; calculate current and proposed map of random
                                               ;; variable assignments
@@ -190,8 +191,8 @@
 
                                               ;; evaluate PDF according to current and proposed
                                               ;; random variable assignments
-                                              current-pdf (pdf-at pdf current-vals)
-                                              proposed-pdf (pdf-at pdf proposed-vals)]
+                                              current-pdf (pdf current-vals)
+                                              proposed-pdf (pdf proposed-vals)]
 
                                           ;; return the corresponding updated log-a value
                                           (- (+ log-a proposed-pdf) current-pdf)))
@@ -228,7 +229,7 @@
         xs' (assoc xs x (sample proposed-dist))]
     (decide x xs xs')))
 
-(defn- gibbs-step [{graph :G :as model} xs proposals]
+(defn- gibbs-step [{graph :G :as model} compiled-P xs proposals]
   "Performs one step of a Gibbs sampling algorithm. The algorithm
   updates the assignments for one latent variable at a time and
   decides whether the proposed assignment should be accepted or
@@ -251,7 +252,7 @@
         ;; the decision function is `choose-proposal`, partially
         ;; applied with the graph and proposals map already known at
         ;; this point.
-        decide (partial choose-proposal graph proposals)
+        decide (partial choose-proposal graph compiled-P proposals)
 
         ;; function invoved for each of the random variables that
         ;; compute a proposed set of random-variable assignments and
@@ -288,9 +289,63 @@
         ;; model
         link-fns (map extract-dist latent)
 
+        ;; given an AST node `n`, this helper function will generate a
+        ;; Clojure anonymous function that can then be directly
+        ;; invoked in order to calculate a value for the expression.
+        ;; The generated function accepts a single argument: a map
+        ;; containing the values of all free variables in the
+        ;; expression.
+        make-lambda (fn [n] (let [;; let `m` be the name of the map taken as parameter
+                                 ;; in this anonymous function
+                                 m 'm
+
+                                 ;; the free variables of the expression are going to be
+                                 ;; random variables referenced in it
+                                 random-vars (ast/free-vars n)
+
+                                 ;; generate a fresh name for the map of constants
+                                 constants-map-name (ast/fresh-sym "constants")
+
+                                 ;; extract the updated expression and map of constants in the
+                                 ;; expression. This is an unfortunate consequence of the fact that
+                                 ;; we don't want constant values like "(normal 1 1)" to be interpreted
+                                 ;; as function calls and recomputed on every application of the
+                                 ;; generated function.
+                                 [link constants] (extract-constants n constants-map-name)
+
+                                 ;; parameter to be passed to the anonymous function
+                                 assignments (ast/variable. m)
+
+                                 ;; AST variable node representing the map of constants
+                                 constants-map (ast/variable. constants-map-name)
+
+                                 ;; substitute free variables in the expression by accesses to the
+                                 ;; map of assignments that is to be passed when the generated function
+                                 ;; is invoked
+                                 map-name (fn [name] (ast/fn-application. 'symbol [(ast/constant. (str name))]))
+                                 get-var (fn [name] (ast/fn-application. 'get [assignments (map-name name)]))
+                                 substitute-random-v (fn [e name] (ast/substitute name (get-var name) e))
+                                 substituted-link-fn (reduce substitute-random-v link random-vars)
+
+                                 ;; generate an AST node representing the anonymous function we want
+                                 lambda (ast/definition. nil [constants-map assignments] substituted-link-fn)
+                                 serialize (fn [n] (formatter/to-str n))
+
+                                 ;; to transfor this into a Clojure lambda, we serialize our AST
+                                 ;; representation and have Clojure evaluate the expression
+                                 to-clj (fn [n] (eval (edn/read-string (serialize n))))]
+
+                             ;; partially apply the lambda with the map of constants so that users
+                             ;; of the function need only pass the map of assignments, which vary
+                             ;; on different iterations of the sampling algorithm
+                             (partial (to-clj lambda) constants)))
+
+        ;; generate a map from random-variable => Clojure anonymous function
+        compiled-P (reduce (fn [m [name n]] (assoc m name (make-lambda n))) {} P)
+
         ;; set of proposed distributions are the link functions in the
         ;; graphical model
-        proposals (with-latent link-fns)
+        proposals (with-latent (map make-lambda link-fns))
 
         ;; initial random-variable assignment to get the process
         ;; started
@@ -305,7 +360,7 @@
         gibbs (fn [n xs]
                 (reduce
                  (fn [{xs :xs data :data} _]
-                   (let [xs (gibbs-step model xs proposals)]
+                   (let [xs (gibbs-step model compiled-P xs proposals)]
                      {:xs xs :data (conj data xs)}))
                  {:xs xs :data []}
                  (repeat n nil)))
@@ -313,7 +368,7 @@
         ;; burn-in state: run the algorithm a number of times to make
         ;; sure we get a set of variable assignments that are "within"
         ;; the posterior distribution
-        {burned-in :xs} (gibbs 10000 xs)
+        {burned-in :xs} (gibbs 2000 xs)
 
         ;; the `gibbs` helper function defined above is a lot more
         ;; general and is able to run `n` gibbs steps. However, in
@@ -362,6 +417,24 @@
     (println "Expected value of slope:" slope-mean)
     (println "Expected value of bias:" bias-mean)))
 
+(defn test-p3 []
+  (let [model (path->model "/home/rmc/Documents/canada/ubc/cw/2018.fall/539/foppl/resources/examples/gibbs/p3.foppl")
+        samples-seq (perform model)
+
+        ;; destructure deterministic expression to get name of the
+        ;; list of random variables in the vector
+        {[{[{vector-args :args}] :args} *others] :args} (:E model)
+        vector-args-names (map :name vector-args)
+        first-name (first vector-args-names)
+        second-name (second vector-args-names)
+
+        _ (println "Burned in")
+        samples (take 10000 samples-seq)
+        are-equal-values (map (fn [m] (= (get m first-name) (get m second-name))) samples)
+        prob-equal-values (/ (count (filter identity are-equal-values)) (count samples))]
+
+    (println "Probability of being in the same cluster:" (float prob-equal-values))))
+
 (defn test-p4 []
   (let [model (path->model "/home/rmc/Documents/canada/ubc/cw/2018.fall/539/foppl/resources/examples/gibbs/p4.foppl")
         samples-seq (perform model)
@@ -375,3 +448,20 @@
         prob-is-raining (/ (count (filter identity is-raining-values)) (count samples))]
 
     (println "Probability that it is raining:" (float prob-is-raining))))
+
+(defn test-p5 []
+  (let [model (path->model "/home/rmc/Documents/canada/ubc/cw/2018.fall/539/foppl/resources/examples/gibbs/p5.foppl")
+        samples-seq (perform model)
+
+        ;; destructure deterministic expression to get name of
+        ;; 'is-cloudy' and the two related branches of the conditional
+        {[{x :name} {y :name}] :args} (:E model)
+
+        samples (take 2000 samples-seq)
+        x-values (map (fn [m] (get m x)) samples)
+        y-values (map (fn [m] (get m y)) samples)]
+
+    (println "Mean x:" (anglican/mean x-values))
+    (println "Variance x", (Math/pow (anglican/std x-values) 2))
+    (println "Mean y:" (anglican/mean y-values))
+    (println "Variance y:" (Math/pow (anglican/std y-values) 2))))

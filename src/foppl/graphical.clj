@@ -11,6 +11,26 @@
   (:import [foppl.ast constant variable literal-vector literal-map fn-application definition
             local-binding foreach loops if-cond sample observe program]))
 
+;; lists all of the known/expected distribution function supported by FOPPL.
+;; This list of distributionns was extracted from those supported by Anglican,
+;; on which this implementation depends.
+(def ^:private distributions
+  #{'bernoulli
+    'beta
+    'binomial
+    'categorical
+    'dirichlet
+    'discrete
+    'exponential
+    'flip
+    'gamma
+    'normal
+    'poisson
+    'uniform-continuous
+    'uniform-discrete
+    'wishart
+    })
+
 ;; represents a graph, where:
 ;;     - V is the set of vertices (random variables) of the graph
 ;;     - A is the set of edges and is a subset of V x V
@@ -68,7 +88,7 @@
           dirac-dist? (re-matches #".*foppl.primitives.dirac-distribution" class-c)
           dist? (or anglican-dist? dirac-dist?)]
       (cond
-        dist? (ast/fn-application. 'observe* [constant random-v])
+        dist? (ast/fn-application. 'anglican.runtime/observe* [constant random-v])
         (nil? c) constant
         :else (utils/foppl-error "Not a distribution object: Score(Constant, v) = ⊥"))))
 
@@ -87,7 +107,8 @@
       (ast/if-cond. predicate f2 f3)))
 
   (visit-fn-application [{random-v :random-v} {name :name args :args :as fn-application}]
-    (ast/fn-application. 'observe* [(ast/fn-application. name args) random-v]))
+    (let [fn-name (if (contains? distributions name) (symbol (str "anglican.runtime/" name)) name)]
+      (ast/fn-application. 'anglican.runtime/observe* [(ast/fn-application. fn-name args) random-v])))
 
   (visit-sample [_ _]
     (utils/foppl-error "Not a distribution object: Score(sample, v) = ⊥"))
