@@ -14,6 +14,9 @@
             [foppl.utils :as utils])
   (:import [foppl.ast constant variable if-cond fn-application definition]))
 
+(def ^:private uniform01
+  (anglican/uniform-continuous 0 1))
+
 ;;;;;;;;;;;;;;;;;;;;
 ;; GIBBS SAMPLING ;;
 ;;;;;;;;;;;;;;;;;;;;
@@ -67,7 +70,7 @@
   (visit-variable [_ variable]
     variable)
 
-  (visit-definition [_ defnition]
+  (visit-definition [_ _]
     (utils/ice "No definitions allowed in determistic language (during Anglican qualification)"))
 
   (visit-local-binding [_ _]
@@ -85,10 +88,10 @@
       (ast/fn-application. fn-name qualified-args)))
 
   (visit-sample [_ _]
-    (utils/foppl-error "Not a distribution object: Score(sample, v) = ⊥"))
+    (utils/ice "No `sample` allowed in deterministic language (during Anglican qualification)"))
 
   (visit-observe [_ _]
-    (utils/foppl-error "Not a distribution object: Score(observe, v) = ⊥"))
+    (utils/ice "No `observe` allowed in deterministic language (during Anglican qualification)"))
   )
 
 ;; Extracts all constants from an expression, substituting them for
@@ -267,7 +270,7 @@
         a (Math/exp log-a)
 
         ;; sample from a Uniform(0, 1) distribution
-        u (rand)]
+        u (anglican/sample* uniform01)]
 
     ;; decide between current and proposed states
     (if (< u a) xs' xs)))
@@ -326,73 +329,13 @@
     ;; `xs`. Returns the updated random-variable assignment.
     (reduce propose-accept xs random-vars)))
 
-(defn- init-gibbs [model latent compiled-P initial compiled-link-fns]
+(defn- init-gibbs [{{P :P} :G :as model} latent initial]
   "Initializes the Metropolis-within-Gibbs sampling algorithm. Uses a
   fixed size burn-in period by performing 5,000 Gibbs steps. Returns
   the initial map of assignments resulting from the burn-in, and a
   function that performs a single step of the Gibbs, to be used when
   generating a lazy sequence of samples."
-  (let [ ;; set of proposed distributions are the link functions in the
-        ;; graphical model
-        proposals (zipmap latent compiled-link-fns)
-
-        ;; run the Metropolis-within-Gibbs algorithm for `n`
-        ;; iterations, given the initial assignment of random
-        ;; variables `xs`. Returns a map with keys `:xs` and `:data`,
-        ;; where `xs` is the assignment map for the last iteration,
-        ;; and `data` is a vector containing the assignments for every
-        ;; iteration of the algorithm.
-        gibbs (fn [n xs]
-                (reduce
-                 (fn [{xs :xs data :data} _]
-                   (let [xs (gibbs-step model compiled-P xs proposals)]
-                     {:xs xs :data (conj data xs)}))
-                 {:xs xs :data []}
-                 (repeat n nil)))
-
-        ;; burn-in state: run the algorithm a number of times to make
-        ;; sure we get a set of variable assignments that are "within"
-        ;; the posterior distribution
-        {burned-in :xs} (gibbs 5000 initial)
-
-        ;; the `gibbs` helper function defined above is a lot more
-        ;; general and is able to run `n` gibbs steps. However, in
-        ;; order to generate our lazy sequence, we write a wrapper for
-        ;; it that, given a map of assignments, produces a new map of
-        ;; assignments as a result of running a single gibbs step
-        next-sample (fn [xs] (:xs (gibbs 1 xs)))]
-
-    ;; return the map of assignments that should be used to initiate
-    ;; the algorithm, and the function that, given a map of
-    ;; assignments, produces the next one.
-    [burned-in next-sample]))
-
-
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; HAMILTONIAN MONTE CARLO SAMPLING ;;
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-
-(defn- init-hmc [...])
-
-
-(defn- sampling-lazy-seq [initial gen-fn]
-  "Generates a lazy sequence for an initial map of
-  assignments. `gen-fn` is supposed to be a function that takes a map
-  of assignments, and returns an updated map of assignments as a
-  result of running a single step a sampling algorithm."
-  (let [next (gen-fn initial)]
-    (lazy-seq (cons next (sampling-lazy-seq next gen-fn)))))
-
-(defn perform [algo {{A :A Y :Y P :P :as graph} :G :as model}]
-  {:pre [(or (= algo :gibbs) (= algo :hmc))]} ;; validate sampling algorithms
-  "Performs sampling of the posterior distribution of latent variables
-  represented by a graphical model. Returns a lazy sequence of samples
-  from the posterior. `algo` indicates which sampling algorithm to
-  use: `:gibbs` for Metropolis-within-Gibbs; or `:hmc` for Hamiltonian
-  Monte Carlo."
-  (let [latent (latent-vars graph)
-
-        ;; extracts distribution AST node from a link function (which
+  (let [;; extracts distribution AST node from a link function (which
         ;; should be in the format (observe* dist val)
         extract-dist (fn [x] (first (:args (get P x))))
 
@@ -460,14 +403,203 @@
         ;; generate a map from random-variable => Clojure anonymous function
         compiled-P (reduce (fn [m [name n]] (assoc m name (make-lambda n))) {} P)
 
+        ;; set of proposed distributions are the link functions in the
+        ;; graphical model
+        proposals (zipmap latent (map make-lambda link-fns))
+
+        ;; run the Metropolis-within-Gibbs algorithm for `n`
+        ;; iterations, given the initial assignment of random
+        ;; variables `xs`. Returns a map with keys `:xs` and `:data`,
+        ;; where `xs` is the assignment map for the last iteration,
+        ;; and `data` is a vector containing the assignments for every
+        ;; iteration of the algorithm.
+        gibbs (fn [n xs]
+                (reduce
+                 (fn [{xs :xs data :data} _]
+                   (let [xs (gibbs-step model compiled-P xs proposals)]
+                     {:xs xs :data (conj data xs)}))
+                 {:xs xs :data []}
+                 (repeat n nil)))
+
+        ;; burn-in state: run the algorithm a number of times to make
+        ;; sure we get a set of variable assignments that are "within"
+        ;; the posterior distribution
+        {burned-in :xs} (gibbs 5000 initial)
+
+        ;; the `gibbs` helper function defined above is a lot more
+        ;; general and is able to run `n` gibbs steps. However, in
+        ;; order to generate our lazy sequence, we write a wrapper for
+        ;; it that, given a map of assignments, produces a new map of
+        ;; assignments as a result of running a single gibbs step
+        next-sample (fn [xs] (:xs (gibbs 1 xs)))]
+
+    ;; return the map of assignments that should be used to initiate
+    ;; the algorithm, and the function that, given a map of
+    ;; assignments, produces the next one.
+    [burned-in next-sample]))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; HAMILTONIAN MONTE CARLO SAMPLING ;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;; This is responsible for transforming an expression with `observe*`
+;; function applications into applications of `normpdf`, so a to make
+;; the function differentiable using the `autodiff` library.
+(defrecord normpdf-visitor [])
+
+(extend-type normpdf-visitor
+  ast/visitor
+
+  (visit-literal-vector [_ _]
+    (utils/ice "Found literal vector while transforming normpdf"))
+
+  (visit-literal-map [_ _]
+    (utils/ice "Found literal-map while transforming normpdf"))
+
+  (visit-foreach [_ _]
+    (utils/ice "Found foreach while transforming normpdf"))
+
+  (visit-loop [_ _]
+    (utils/ice "Found loop while transforming normpdf"))
+
+  (visit-constant [_ {dist :n :as constant}]
+    (let [class-dist (str (class dist))
+          anglican-dist (re-matches #".*anglican.runtime.(.*)-distribution" class-dist)
+          dirac-dist? (re-matches #".*foppl.primitives.dirac-distribution" class-dist)
+          distribution-object? (or anglican-dist dirac-dist?)
+          dist-id (if dirac-dist? "dirac" (last anglican-dist))]
+
+      ;; we can only compute the derivative of the PDF of normal
+      ;; distributions -- throw an error if we visit a different kind
+      ;; of distribution.  This visitor will return the distribution
+      ;; parameters as a collection. The parameters will be collected
+      ;; on the visit to the corresponding `observe*` call as this
+      ;; visitor traverses the AST.
+      (cond
+        (not distribution-object?) constant
+        (= dist-id "normal") [(ast/constant. (:mean dist)) (ast/constant. (:sd dist))]
+        :else (utils/foppl-error (str "Do not know how to compute derivative of distribution: " dist-id)))))
+
+  (visit-variable [_ variable]
+    variable)
+
+  (visit-definition [_ _]
+    (utils/ice "Found definition while transforming normpdf"))
+
+  (visit-local-binding [_ _]
+    (utils/ice "Found local binding while transforming normpdf"))
+
+  (visit-if-cond [_ if-cond]
+    if-cond)
+
+  (visit-fn-application [v {name :name args :args}]
+    (cond
+      ;; if we are visiting an `observe*` call, transform the node to
+      ;; an application of `normpdf`, where the first two parameters
+      ;; are the arguments to the normal distribution, and the last
+      ;; argument is the observed value.
+      (= name 'anglican.runtime/observe*) (ast/fn-application. 'normpdf (conj (accept (first args) v) (second args)))
+
+      ;; if this is a visit to a distribution object, return its the
+      ;; distribution parameters.  This follows the same signature of
+      ;; the `visit-constant` method when the constant is an Anglican
+      ;; distribution object.
+      (contains? distributions name) (into [] args)
+
+      ;; if the function is not related to distributions or
+      ;; observations, recursively transform the function arguments.
+      :else (ast/fn-application. name (map (fn [n] (accept n v)) args))))
+
+  (visit-sample [_ _]
+    (utils/ice "Found `sample` while transforming normpdf"))
+
+  (visit-observe [_ _]
+    (utils/ice "Found `observe` while transforming normpdf")))
+
+(defn- init-hmc [{{P :P Y :Y} :G :as model} latent initial]
+  "Initializes the Hamiltonian Monte Carlo sampling algorithm. Uses
+  hard-coded parameters for the number of iterations used in the
+  leapfrog integration (`T`); `epsilon` and the mass `M` of the system
+  are also fixed. Returns the initial set of assignments to be used
+  when sampling and a function that, given one set of assignments,
+  produces the next."
+  (let [;; parameters of the HMC algorithm
+        T 10
+        epsilon 0.1
+        M 1
+
+        ;; pairs up additions in an expression, i.e., (+ 1 2 3 4)
+        ;; becomes (+ 1 (+ 2 (+ 3 4))). This is so that the automatic
+        ;; differention library will be able to produce partial
+        ;; derivatives for the potential energy of the system.
+        pair-up-addition (fn pair-up [{name :name args :args :as sum}]
+                           (let [add (fn [nums] (ast/fn-application. '+ nums))]
+
+                             ;; the AST node given to this function *must* be a function
+                             ;; application of `+`.
+                             (when-not (= name '+)
+                               (utils/foppl-error (str "Not an addition function: " name)))
+
+                             (cond
+                               ;; if there is only one argument, introduce an extra
+                               ;; `0` so that addition will have two parameters
+                               (= (count args) 1) (add [(first args) (ast/constant. 0)])
+
+                               ;; if this is an addition of two expressions, no changes
+                               ;; are necessary
+                               (= (count args) 2) sum
+
+                               ;; otherwise, we are adding more than two expressions.
+                               ;; The resulting expression is the sum of the first expression,
+                               ;; and a recursive call to the rest of the expressions.
+                               :else (add [(first args) (pair-up (add (rest args)))]))))
+
+        ;; helper function to transform an expression in order to make
+        ;; it differentiable.  Used in the potential energy
+        ;; formula. First, changes calls to `observe*` to calls to
+        ;; `normpdf`, and then it pairs up additions
+        transform-pdf (fn [n] (-> n
+                                 (accept (normpdf-visitor.))
+                                 pair-up-addition))
+
+        ;; potential energy formula. See section 3.4.1 of the book for a representation
+        ;; in mathematical notation
+        observed-vars (keys Y)
+        Ex-terms (map (fn [x] (get P x)) latent)
+        Ey-terms (map (fn [y] (ast/substitute y (get Y y) (get P y))) observed-vars)
+        Ex (ast/fn-application. '+ Ex-terms)
+        Ey (ast/fn-application. '+ Ey-terms)
+        Eu (ast/fn-application. '* [(ast/constant. -1.0) (ast/fn-application. '+ [(transform-pdf Ex) (transform-pdf Ey)])])]))
+
+
+(defn- sampling-lazy-seq [initial gen-fn]
+  "Generates a lazy sequence for an initial map of
+  assignments. `gen-fn` is supposed to be a function that takes a map
+  of assignments, and returns an updated map of assignments as a
+  result of running a single step a sampling algorithm."
+  (let [next (gen-fn initial)]
+    (lazy-seq (cons next (sampling-lazy-seq next gen-fn)))))
+
+(defn perform [algo {{A :A Y :Y P :P :as graph} :G :as model}]
+  {:pre [(or (= algo :gibbs) (= algo :hmc))]} ;; validate sampling algorithms
+  "Performs sampling of the posterior distribution of latent variables
+  represented by a graphical model. Returns a lazy sequence of samples
+  from the posterior. `algo` indicates which sampling algorithm to
+  use: `:gibbs` for Metropolis-within-Gibbs; or `:hmc` for Hamiltonian
+  Monte Carlo."
+  (let [latent (latent-vars graph)
+
         ;; initial random-variable assignment is drawn from the prior
         ;; ditributions
         prior-samples (operations/sample-from-prior model)
         xs (reduce (fn [m v] (assoc m v (get prior-samples v))) {} latent)
 
-        [initial gen-fn] (cond
-                           (= algo :gibbs) (init-gibbs model latent compiled-P xs (map make-lambda link-fns))
-                           (= algo :hmc) (utils/foppl-error "Unsupported sampling algorithm: hmc"))]
+        init-fn (cond
+                  (= algo :gibbs) init-gibbs
+                  (= algo :hmc) init-hmc)
+
+        [initial gen-fn] (init-fn model latent xs)]
 
     (sampling-lazy-seq initial gen-fn)))
 
