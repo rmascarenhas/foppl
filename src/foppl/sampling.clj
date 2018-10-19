@@ -1,6 +1,8 @@
-(ns foppl.mh_gibbs
-  "Implements the Metropolis-within-Gibbs algorithm for the sampling of
-  the posterior of the distribution represented by a graphical model."
+(ns foppl.sampling
+  "Implements the sampling algorithms for the calculation of the
+  posterior of the distribution represented by a graphical
+  model. Currently implemented algorithms are Metropolis-within-Gibbs
+  and Hamiltonian Monte Carlo."
   (:require [clojure.set :as set]
             [clojure.edn :as edn]
             [anglican.runtime :as anglican]
@@ -11,6 +13,10 @@
             [foppl.toposort :as toposort]
             [foppl.utils :as utils])
   (:import [foppl.ast constant variable if-cond fn-application definition]))
+
+;;;;;;;;;;;;;;;;;;;;
+;; GIBBS SAMPLING ;;
+;;;;;;;;;;;;;;;;;;;;
 
 ;; lists all of the known/expected distribution function supported by FOPPL.
 ;; This list of distributionns was extracted from those supported by Anglican,
@@ -320,23 +326,71 @@
     ;; `xs`. Returns the updated random-variable assignment.
     (reduce propose-accept xs random-vars)))
 
-(defn- gibbs-lazy-seq [initial gen-fn]
+(defn- init-gibbs [model latent compiled-P initial compiled-link-fns]
+  "Initializes the Metropolis-within-Gibbs sampling algorithm. Uses a
+  fixed size burn-in period by performing 5,000 Gibbs steps. Returns
+  the initial map of assignments resulting from the burn-in, and a
+  function that performs a single step of the Gibbs, to be used when
+  generating a lazy sequence of samples."
+  (let [ ;; set of proposed distributions are the link functions in the
+        ;; graphical model
+        proposals (zipmap latent compiled-link-fns)
+
+        ;; run the Metropolis-within-Gibbs algorithm for `n`
+        ;; iterations, given the initial assignment of random
+        ;; variables `xs`. Returns a map with keys `:xs` and `:data`,
+        ;; where `xs` is the assignment map for the last iteration,
+        ;; and `data` is a vector containing the assignments for every
+        ;; iteration of the algorithm.
+        gibbs (fn [n xs]
+                (reduce
+                 (fn [{xs :xs data :data} _]
+                   (let [xs (gibbs-step model compiled-P xs proposals)]
+                     {:xs xs :data (conj data xs)}))
+                 {:xs xs :data []}
+                 (repeat n nil)))
+
+        ;; burn-in state: run the algorithm a number of times to make
+        ;; sure we get a set of variable assignments that are "within"
+        ;; the posterior distribution
+        {burned-in :xs} (gibbs 5000 initial)
+
+        ;; the `gibbs` helper function defined above is a lot more
+        ;; general and is able to run `n` gibbs steps. However, in
+        ;; order to generate our lazy sequence, we write a wrapper for
+        ;; it that, given a map of assignments, produces a new map of
+        ;; assignments as a result of running a single gibbs step
+        next-sample (fn [xs] (:xs (gibbs 1 xs)))]
+
+    ;; return the map of assignments that should be used to initiate
+    ;; the algorithm, and the function that, given a map of
+    ;; assignments, produces the next one.
+    [burned-in next-sample]))
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; HAMILTONIAN MONTE CARLO SAMPLING ;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn- init-hmc [...])
+
+
+(defn- sampling-lazy-seq [initial gen-fn]
   "Generates a lazy sequence for an initial map of
   assignments. `gen-fn` is supposed to be a function that takes a map
   of assignments, and returns an updated map of assignments as a
-  result of running a single step of the Gibbs algorithm."
+  result of running a single step a sampling algorithm."
   (let [next (gen-fn initial)]
-    (lazy-seq (cons next (gibbs-lazy-seq next gen-fn)))))
+    (lazy-seq (cons next (sampling-lazy-seq next gen-fn)))))
 
-(defn perform [{{A :A Y :Y P :P :as graph} :G :as model}]
+(defn perform [algo {{A :A Y :Y P :P :as graph} :G :as model}]
+  {:pre [(or (= algo :gibbs) (= algo :hmc))]} ;; validate sampling algorithms
   "Performs sampling of the posterior distribution of latent variables
   represented by a graphical model. Returns a lazy sequence of samples
-  from the posterior."
+  from the posterior. `algo` indicates which sampling algorithm to
+  use: `:gibbs` for Metropolis-within-Gibbs; or `:hmc` for Hamiltonian
+  Monte Carlo."
   (let [latent (latent-vars graph)
-
-        ;; helper function to create maps from latent variables to
-        ;; some value
-        with-latent (partial zipmap latent)
 
         ;; extracts distribution AST node from a link function (which
         ;; should be in the format (observe* dist val)
@@ -406,42 +460,16 @@
         ;; generate a map from random-variable => Clojure anonymous function
         compiled-P (reduce (fn [m [name n]] (assoc m name (make-lambda n))) {} P)
 
-        ;; set of proposed distributions are the link functions in the
-        ;; graphical model
-        proposals (with-latent (map make-lambda link-fns))
-
         ;; initial random-variable assignment is drawn from the prior
         ;; ditributions
         prior-samples (operations/sample-from-prior model)
         xs (reduce (fn [m v] (assoc m v (get prior-samples v))) {} latent)
 
-        ;; run the Metropolis-within-Gibbs algorithm for `n`
-        ;; iterations, given the initial assignment of random
-        ;; variables `xs`. Returns a map with keys `:xs` and `:data`,
-        ;; where `xs` is the assignment map for the last iteration,
-        ;; and `data` is a vector containing the assignments for every
-        ;; iteration of the algorithm.
-        gibbs (fn [n xs]
-                (reduce
-                 (fn [{xs :xs data :data} _]
-                   (let [xs (gibbs-step model compiled-P xs proposals)]
-                     {:xs xs :data (conj data xs)}))
-                 {:xs xs :data []}
-                 (repeat n nil)))
+        [initial gen-fn] (cond
+                           (= algo :gibbs) (init-gibbs model latent compiled-P xs (map make-lambda link-fns))
+                           (= algo :hmc) (utils/foppl-error "Unsupported sampling algorithm: hmc"))]
 
-        ;; burn-in state: run the algorithm a number of times to make
-        ;; sure we get a set of variable assignments that are "within"
-        ;; the posterior distribution
-        {burned-in :xs} (gibbs 2000 xs)
-
-        ;; the `gibbs` helper function defined above is a lot more
-        ;; general and is able to run `n` gibbs steps. However, in
-        ;; order to generate our lazy sequence, we write a wrapper for
-        ;; it that, given a map of assignments, produces a new map of
-        ;; assignments as a result of running a single gibbs step
-        next-sample (fn [xs] (:xs (gibbs 1 xs)))]
-
-    (gibbs-lazy-seq burned-in next-sample)))
+    (sampling-lazy-seq initial gen-fn)))
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -460,7 +488,7 @@
 
 (defn test-p1 []
   (let [model (path->model "/home/rmc/Documents/canada/ubc/cw/2018.fall/539/foppl/resources/examples/gibbs/p1.foppl")
-        samples-seq (perform model)
+        samples-seq (perform :gibbs model)
         mu (:name (:E model))
         samples (take 200000 samples-seq)
         values (map (fn [m] (get m mu)) samples)
@@ -469,7 +497,7 @@
 
 (defn test-p2 []
   (let [model (path->model "/home/rmc/Documents/canada/ubc/cw/2018.fall/539/foppl/resources/examples/gibbs/p2.foppl")
-        samples-seq (perform model)
+        samples-seq (perform :gibbs model)
         [slope bias] (map :name (:args (:E model)))
         samples (take 200000 samples-seq)
 
@@ -483,7 +511,7 @@
 
 (defn test-p3 []
   (let [model (path->model "/home/rmc/Documents/canada/ubc/cw/2018.fall/539/foppl/resources/examples/gibbs/p3.foppl")
-        samples-seq (perform model)
+        samples-seq (perform :gibbs model)
 
         ;; destructure deterministic expression to get name of the
         ;; list of random variables in the vector
@@ -500,7 +528,7 @@
 
 (defn test-p4 []
   (let [model (path->model "/home/rmc/Documents/canada/ubc/cw/2018.fall/539/foppl/resources/examples/gibbs/p4.foppl")
-        samples-seq (perform model)
+        samples-seq (perform :gibbs model)
 
         ;; destructure deterministic expression to get name of
         ;; 'is-cloudy' and the two related branches of the conditional
@@ -514,7 +542,7 @@
 
 (defn test-p5 []
   (let [model (path->model "/home/rmc/Documents/canada/ubc/cw/2018.fall/539/foppl/resources/examples/gibbs/p5.foppl")
-        samples-seq (perform model)
+        samples-seq (perform :gibbs model)
 
         ;; destructure deterministic expression to get name of
         ;; 'is-cloudy' and the two related branches of the conditional

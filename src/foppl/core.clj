@@ -8,7 +8,7 @@
             [foppl.scope :as scope]
             [foppl.desugar :as desugar]
             [foppl.graphical :as graphical]
-            [foppl.mh_gibbs :as gibbs]
+            [foppl.sampling :as sampling]
             [foppl.operations :as operations])
   (:gen-class))
 
@@ -60,7 +60,7 @@
            desugar/perform
            scope/perform
            graphical/perform
-           gibbs/perform
+           (sampling/perform :gibbs)
            (take 3)
            println)
       (catch clojure.lang.ExceptionInfo e
