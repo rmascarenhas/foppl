@@ -207,6 +207,73 @@
     observe)
   )
 
+;; evaluates an expression where sub-expressions may not yet be
+;; values, but can be reduced to one in multiple steps (i.e., there
+;; are no free variables and the functions applied are all valid).
+;; Produces the resuling expression as a constant if successful.
+(defrecord deep-eval-visitor [])
+
+(defn- accept-coll [es v]
+  (map (fn [n] (accept n v)) es))
+
+(extend-type deep-eval-visitor
+  ast/visitor
+
+  (visit-constant [_ c]
+    c)
+
+  (visit-variable [_ var]
+    var)
+
+  (visit-literal-vector [v {es :es}]
+    (utils/ice "literal vectors not allowed in deterministic language"))
+
+  (visit-literal-map [v {es :es}]
+    (utils/ice "literal maps not allowed in deterministic language"))
+
+  (visit-definition [_ definition]
+    (utils/ice "procedure definitions not allowed in deterministic language"))
+
+  (visit-local-binding [_ local-binding]
+    (utils/ice "local bindings not allowed in deterministic language"))
+
+  (visit-foreach [_ foreach]
+    (utils/ice "foreach not allowed in deterministic language"))
+
+  (visit-loop [_ loop]
+    (utils/ice "loop not allowed in deterministic language"))
+
+  (visit-if-cond [v {predicate :predicate then :then else :else :as if-cond}]
+    (let [raw-predicate (accept predicate v)]
+      (cond
+        (= raw-predicate true) (accept then v)
+        (= raw-predicate false) (accept else v)
+        :else if-cond)))
+
+  (visit-fn-application [v {name :name args :args}]
+    (let [;; performs evaluation of an expression that is immediately
+          ;; reducible to a value
+          do-eval (fn [e] (accept e (eval-visitor.)))
+
+          ;; deeply evaluate each of the arguments passed to the
+          ;; function
+          evaled-args (accept-coll args v)
+
+          ;; construct a corresponding function application AST node
+          ;; where the arguments have been reduced to a value
+          resulting-fn (ast/fn-application. name evaled-args)]
+
+      ;; evaluate the resulting expression, which should be reduced to
+      ;; a value using regular evaluation
+      (do-eval resulting-fn)))
+
+  (visit-sample [_ sample]
+    (utils/ice "sample not allowed in deterministic language"))
+
+  (visit-observe [_ observe]
+    (utils/ice "observe not allowed in deterministic language"))
+  )
+
 (def ^:const all-builtins
   "Set of all language builtins. Includes every function defined in clojure.core
   and anglican.runtime (plus extra definitions for martrix operations)."
@@ -220,4 +287,10 @@
   that not all expressions are evaluated: only function applications are, and
   only those defined in clojure.core or anglican.runtime."
   (let [visitor (eval-visitor.)]
+    (accept e visitor)))
+
+(defn deep-eval [e]
+  "Deeply evaluate an expression `e`, returning an AST node
+  corresponding to the value produced by the computation."
+  (let [visitor (deep-eval-visitor.)]
     (accept e visitor)))

@@ -209,23 +209,6 @@
         c (get xs x)
         c' (get xs' x)
 
-        ;; Fix bad guess at the distribution's support: Initially,
-        ;; Gibbs is started with a scalar number assigned to each
-        ;; random variable. However, depending on the distribution,
-        ;; some random variables will have samples that draw a vector
-        ;; of numbers (e.g., dirichlet) or boolean values (e.g.,
-        ;; bernoulli). The checks below make sure that, if the initial
-        ;; value `c` is of different type than the sampled value `c'`,
-        ;; then `c` is changed to be of the same type as `c'`, with
-        ;; small variations (incremented in case of collections of
-        ;; numbers, and negated in case of boolean values).
-        c (if (and (seq? c') (number? c)) (map inc c') c)
-        xs (assoc xs x c)
-
-        boolean? (fn [e] (or (= e true) (= e false)))
-        c (if (and (boolean? c') (number? c)) (not c') c)
-        xs (assoc xs x c)
-
         log-a (- (log-prob d' c) (log-prob d c'))
 
         ;; calculate a map from {random-variable name -> set of free
@@ -427,9 +410,10 @@
         ;; graphical model
         proposals (with-latent (map make-lambda link-fns))
 
-        ;; initial random-variable assignment to get the process
-        ;; started
-        xs (with-latent (repeat 1))
+        ;; initial random-variable assignment is drawn from the prior
+        ;; ditributions
+        prior-samples (operations/sample-from-prior model)
+        xs (reduce (fn [m v] (assoc m v (get prior-samples v))) {} latent)
 
         ;; run the Metropolis-within-Gibbs algorithm for `n`
         ;; iterations, given the initial assignment of random
@@ -508,7 +492,6 @@
         first-name (first vector-args-names)
         second-name (second vector-args-names)
 
-        _ (println "Burned in")
         samples (take 10000 samples-seq)
         are-equal-values (map (fn [m] (= (get m first-name) (get m second-name))) samples)
         prob-equal-values (/ (count (filter identity are-equal-values)) (count samples))]
