@@ -11,8 +11,10 @@
             [foppl.formatter :as formatter]
             [foppl.operations :as operations]
             [foppl.toposort :as toposort]
+            [foppl.autodiff :as autodiff]
             [foppl.utils :as utils])
-  (:import [foppl.ast constant variable if-cond fn-application definition]))
+  (:import [foppl.ast constant variable if-cond fn-application definition literal-vector
+            literal-map definition local-binding]))
 
 (def ^:private uniform01
   (anglican/uniform-continuous 0 1))
@@ -446,9 +448,9 @@
 ;; This is responsible for transforming an expression with `observe*`
 ;; function applications into applications of `normpdf`, so a to make
 ;; the function differentiable using the `autodiff` library.
-(defrecord normpdf-visitor [])
+(defrecord observe-normpdf-visitor [])
 
-(extend-type normpdf-visitor
+(extend-type observe-normpdf-visitor
   ast/visitor
 
   (visit-literal-vector [_ _]
@@ -517,6 +519,59 @@
   (visit-observe [_ _]
     (utils/ice "Found `observe` while transforming normpdf")))
 
+(defn- accept-coll [coll v]
+  "Visits every node in the collection `coll` using visitor `v`,
+  returning the resulting collection."
+  (map (fn [n] (accept n v)) coll))
+
+;; This visitor qualifies calls to the `normpdf` function in an
+;; arbitrarily complex expression.  Used in the output of the
+;; derivative-generating function, `autodiff/perform`.
+(defrecord normpdf-qualifier-visitor [])
+
+(extend-type normpdf-qualifier-visitor
+  ast/visitor
+
+  (visit-literal-vector [v {es :es}]
+    (ast/literal-vector. (accept-coll es v)))
+
+  (visit-literal-map [v {es :es}]
+    (ast/literal-map. (accept-coll es v)))
+
+  (visit-foreach [_ _]
+    (utils/ice "foreach should have been desugared during normpdf qualification"))
+
+  (visit-loop [_ _]
+    (utils/ice "loop should have been desugared during normpdf qualification"))
+
+  (visit-constant [_ c]
+    c)
+
+  (visit-variable [_ variable]
+    variable)
+
+  (visit-definition [v {name :name args :args e :e}]
+    (ast/definition. name args (accept e v)))
+
+  (visit-local-binding [v {bindings :bindings es :es}]
+    (let [pairs (partition 2 bindings)
+          qualified-bindings (mapcat (fn [[name val]] [name (accept val v)]) pairs)]
+      (ast/local-binding. qualified-bindings (accept-coll es v))))
+
+  (visit-if-cond [v {predicate :predicate then :then else :else}]
+    (ast/if-cond. (accept predicate v) (accept then v) (accept else v)))
+
+  (visit-fn-application [v {name :name args :args}]
+    (if (= name 'normpdf)
+      (ast/fn-application. 'foppl.autodiff/normpdf (accept-coll args v))
+      (ast/fn-application. name (accept-coll args v))))
+
+  (visit-sample [_ _]
+    (utils/ice "No `sample` should exist when qualifying normpdf"))
+
+  (visit-observe [_ _]
+    (utils/ice "No `observe` should exist when qualifying normpdf")))
+
 (defn- init-hmc [{{P :P Y :Y} :G :as model} latent initial]
   "Initializes the Hamiltonian Monte Carlo sampling algorithm. Uses
   hard-coded parameters for the number of iterations used in the
@@ -524,7 +579,7 @@
   are also fixed. Returns the initial set of assignments to be used
   when sampling and a function that, given one set of assignments,
   produces the next."
-  (let [;; parameters of the HMC algorithm
+  (let [ ;; parameters of the HMC algorithm
         T 10
         epsilon 0.1
         M 1
@@ -560,8 +615,15 @@
         ;; formula. First, changes calls to `observe*` to calls to
         ;; `normpdf`, and then it pairs up additions
         transform-pdf (fn [n] (-> n
-                                 (accept (normpdf-visitor.))
+                                 (accept (observe-normpdf-visitor.))
                                  pair-up-addition))
+
+        ;; given an AST node `n`, this function will qualify
+        ;; applications of `normpdf`, appending the namespace where
+        ;; its implementation can be found: `foppl.autodiff/normpdf`.
+        ;; This is so that Clojure can successfully compile the
+        ;; derivative-calculating function into an anonymous function.
+        qualify-normpdf (fn [n] (accept n (normpdf-qualifier-visitor.)))
 
         ;; potential energy formula. See section 3.4.1 of the book for a representation
         ;; in mathematical notation
@@ -570,7 +632,30 @@
         Ey-terms (map (fn [y] (ast/substitute y (get Y y) (get P y))) observed-vars)
         Ex (ast/fn-application. '+ Ex-terms)
         Ey (ast/fn-application. '+ Ey-terms)
-        Eu (ast/fn-application. '* [(ast/constant. -1.0) (ast/fn-application. '+ [(transform-pdf Ex) (transform-pdf Ey)])])]))
+        Eu (ast/fn-application. '* [(ast/constant. -1.0) (ast/fn-application. '+ [(transform-pdf Ex) (transform-pdf Ey)])])
+
+        gradient-args (into [] (map (fn [name] (ast/variable. name)) latent))
+
+        ;; generate an anonymous function that calculates the
+        ;; potential energy of the model.
+        Eu-fn (ast/definition. nil gradient-args Eu)
+
+        ;; generate a function that computes the gradient of the
+        ;; potential energy of the model with respect to the latent
+        ;; variables.
+        gradient-Eu (autodiff/perform-tree Eu-fn)
+
+        ;; qualify calls to `normpdf` to be independent of evaluation
+        ;; namespace.
+        qualified-gradient (qualify-normpdf (ast/to-tree gradient-Eu))
+
+        ;; compile the gradient function to a Clojure anonymous
+        ;; function.
+        gradient-fn (-> qualified-gradient
+                        formatter/to-str
+                        edn/read-string
+                        eval)
+        ]))
 
 
 (defn- sampling-lazy-seq [initial gen-fn]

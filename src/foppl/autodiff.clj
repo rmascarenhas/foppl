@@ -534,6 +534,15 @@
       formatter/to-str
       edn/read-string))
 
+(defn perform-tree [tree]
+  "Performs automatic differentiation of a parsed function
+  `tree`. Useful when the caller artifically created the function to
+  be derived from a FOPPL program."
+  (-> tree
+      compute-graph
+      generate-autodiff
+      serialize))
+
 (defn perform [f]
   "Performs automatic, reverse-mode diferentiation of a function
   `f`. The function should be passed in quoted form. Returns another
@@ -542,6 +551,4 @@
   of partial derivatives for each function parameter."
   (-> f
       to-tree
-      compute-graph
-      generate-autodiff
-      serialize))
+      perform-tree))
