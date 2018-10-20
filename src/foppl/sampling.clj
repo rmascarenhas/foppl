@@ -627,22 +627,13 @@
         ;; `to` in `n`.
         rename-fn (fn [from to] (fn [n] (accept n (rename-fn-visitor. from to))))
 
-        ;; manipulate calls to `log` to be `Math/log` or
-        ;; vice-versa. When differentiating, we want the function to
-        ;; be called `log`, as understanded by the `autodiff` library.
-        ;; When evaluating an anonymous function, we want it to be
-        ;; fully qualified.
-        no-math-log (rename-fn 'Math/log 'log)
-        qualify-log (rename-fn 'log 'Math/log)
-
         ;; helper function to transform an expression in order to make
         ;; it differentiable.  Used in the potential energy
         ;; formula. First, changes calls to `observe*` to calls to
         ;; `normpdf`, and then it pairs up additions
         transform-pdf (fn [n] (-> n
                                  (accept (observe-normpdf-visitor.))
-                                 pair-up-addition
-                                 no-math-log))
+                                 pair-up-addition))
 
         ;; helper function that, given an AST representation of an
         ;; anonymous function definition, compiles it to a Clojure
@@ -663,16 +654,8 @@
         ;; in mathematical notation
         observed-vars (keys Y)
 
-        ;; helper function that calculates the log of an expression
-        ;; given.
-        math-log #(ast/fn-application. 'Math/log [%])
-
         Ex-terms (map (fn [x] (get P x)) latent)
         Ey-terms (map (fn [y] (ast/substitute y (get Y y) (get P y))) observed-vars)
-
-        ;; calculate the log of each of the terms in Ex and Ey
-        Ex-terms (map math-log Ex-terms)
-        Ey-terms (map math-log Ey-terms)
 
         Ex (ast/fn-application. '+ Ex-terms)
         Ey (ast/fn-application. '+ Ey-terms)
@@ -692,7 +675,6 @@
         ;; qualify every call to Anglican functions so Clojure will be
         ;; able to resolve all symbols.
         Eu-defn (ast/definition. nil energy-args (accept Eu (anglican-qualify-visitor.)))
-        _ (println "Eu:" (formatter/to-str Eu-defn))
         Eu-fn (to-lambda Eu-defn)
 
         ;; potential energy formula, transformed in such a way as to
@@ -710,9 +692,9 @@
 
         ;; qualify calls to `normpdf` to be independent of evaluation
         ;; namespace.
-        qualified-gradient (-> (ast/to-tree gradient-Eu)
-                               qualify-normpdf
-                               qualify-log)
+        qualified-gradient (-> gradient-Eu
+                               ast/to-tree
+                               qualify-normpdf)
 
         ;; compile the gradient function to a Clojure anonymous
         ;; function.
@@ -724,57 +706,120 @@
     [Eu-fn (gradient. gradient-fn energy-formal-args)]))
 
 (defn- mvn-mass-matrix [n M]
-  (let [matrix (reduce #(conj % (assoc (into [] (repeat n 0)) %2 M)) [] (range n))]
+  "Builds a Multivariate Normal distribution (MVN) for a graphical
+  model with `n` latent variables, where the mass of each is constant
+  `M`. Returns an Anglican representation of the distribution, which
+  can then be sampled to get a collection of sampled values."
+
+  (let [;; produce a diagonal matrix where each non-zero element is
+        ;; equal to the mass `M` given.
+        matrix (reduce #(conj % (assoc (into [] (repeat n 0)) %2 M)) [] (range n))]
+
+    ;; the `mvn` function takes as first argument a collection of
+    ;; means (in a mass matrix, they are always zero), and a
+    ;; covariance matrix, represented by the diagonal matrix computed
+    ;; above.
     (anglican/mvn (repeat n 0) matrix)))
 
 (defn- scalar-vector-op [f scalar vector]
+  "Performs an operation, represented by function `f`, between a
+  scalar value and a vector. Returns a vector."
   (mapv #(f scalar %) vector))
 
 (defn- vector-op [f va vb]
   {:pre [(= (count va) (count vb))]}
+  "Performs an operation, represented by function `f`, over two
+  vectors `va` and `vb`, which must be of same length. Returns a
+  vector."
 
   (let [zipped (map vector va vb)]
     (mapv (fn [[a b]] (f a b)) zipped)))
 
 (defn- leapfrog-iter [epsilon grad [Rs Xs] t]
+  "A single iteration of the leapfrog ingration process. See the book
+  for more details."
   (let [Xt-1 (get Xs (- t 1))
         Rt-half (get Rs (- t 1/2))
 
         Xs' (assoc Xs t (vector-op + Xt-1 (scalar-vector-op * epsilon Rt-half)))
-        Rs' (assoc Rs (+ t 1/2) (vector-op - Rt-half (scalar-vector-op * (- epsilon) (grad (get Xs' t)))))]
+        Rs' (assoc Rs (+ t 1/2) (vector-op - Rt-half (scalar-vector-op * epsilon (grad (get Xs' t)))))]
 
     [Rs' Xs']))
 
 (defn- leapfrog [xs R0 T epsilon {args :args :as potential-gradient} project]
+  "Performs leapfrog integration of the trajectory the of our
+  exploration over the curve being explored. `xs` is a set of random
+  variable assignments; `R0` is the momentum, as drawn from a MVN. `T`
+  and `epsilon` are parameters of the algorithm. `potential-gradient`
+  is a function that computes the gradient of the potential energy of
+  the system. Finally, `project` is a helper function that produces a
+  sequence of values for random-variables given a map of assignments,
+  as produced by the gradient function."
   (let [grad #(project (apply-gradient potential-gradient %))
 
         Xs {0 (project xs)}
-        Rs {1/2 (vector-op - R0 (scalar-vector-op * (* -0.5 epsilon) (grad (get Xs 0))))}
+        Rs {1/2 (vector-op - R0 (scalar-vector-op * (* 0.5 epsilon) (grad (get Xs 0))))}
 
         leapfrog-fn (partial leapfrog-iter epsilon grad)
         [Rs' Xs'] (reduce leapfrog-fn [Rs Xs] (range 1 T))
 
+        ;; for a friendlier presentation of this algorithm, see
+        ;; Algorithm 4, page 87, of Introduction to Probabilistic
+        ;; Programming
         Xt (vector-op + (get Xs' (- T 1)) (scalar-vector-op * epsilon (get Rs' (- T 1/2))))
-        Rt (vector-op - (get Rs' (- T 1/2)) (scalar-vector-op * (* -0.5 epsilon) (grad Xt)))
+        Rt (vector-op - (get Rs' (- T 1/2)) (scalar-vector-op * (* 0.5 epsilon) (grad Xt)))
 
+        ;; we manipulated random variable assignments in this function
+        ;; as a sequence of values.  However, the sampling algorithm
+        ;; needs to return a map from random-variable name to their
+        ;; values. This function will generate the map back from a
+        ;; sequence of assigned values.
         expand (fn [coll] (reduce (fn [[i m] name] [(inc i) (assoc m name (nth coll i))]) [0 {}] args))]
 
+    ;; since the `reduce` operation above keeps track of the index in
+    ;; the collection, make sure to return only the actual map
+    ;; reduced.
     [(second (expand Xt)) Rt]))
 
 (defn- hamiltonian [potential xs rs]
-  (let [Ux (apply potential xs)
+  "Calculates the Hamiltonian for a system where the assignmemnts of
+  random variables is `xs` and the momentum is `rs`."
+  (let [;; calculate the potential energy of the system
+        Ux (apply potential xs)
         r-squared (map #(* % %) rs)
         sum-r-squared (reduce + r-squared)
+
+        ;; kinetic energy
         Kr (* 0.5 sum-r-squared)]
+
+    ;; the Hamiltonian is defined as H(X, R) = U(X) + K(R)
     (+ Ux Kr)))
 
 (defn- hmc-step [mvn T epsilon potential {args :args :as potential-gradient} xs]
-  (let [project (fn [assignments] (reduce (fn [coll name] (conj coll (get assignments name))) [] args))
+  "Performs a single step of the Hamiltonian Monte Carlo
+  algorithm. Given a set of assignments `xs` this function will
+  produce the next one. See the Introduction to Probabilistic
+  Programming book for a friendlier explanation of how the algorithm
+  works."
+  (let [;; project a map of assignments, as produced by the gradient
+        ;; function, for example, into a sequence of parameters than
+        ;; can be used to calculate the potential energy or its
+        ;; partial derivatives.
+        project (fn [assignments] (reduce (fn [coll name] (conj coll (get assignments name))) [] args))
+
+        ;; initial momentum: sample from the Multivariate Normal
+        ;; distribution.
         R (anglican/sample* mvn)
+
+        ;; get the next set of assignments and momentum from the
+        ;; leapfrog integration.
         [xs' R'] (leapfrog xs R T epsilon potential-gradient project)
 
         u (anglican/sample* uniform01)
         H (partial hamiltonian potential)
+
+        ;; calculate whether or not we should accept this set of
+        ;; assignments
         exp-hamiltonian (Math/exp (- (H (project xs) R) (H (project xs') R')))]
 
     (if (< u exp-hamiltonian) xs' xs)))
@@ -792,9 +837,19 @@
         M 1
         mvn (mvn-mass-matrix (count latent) M)
 
+        ;; generate functions to compute the potential energy of the
+        ;; system at different points, as well as the gradient of the
+        ;; potential energy with respect to the latent variables of
+        ;; the model.
         [potential gradient] (potential-energy-gradient model latent)
 
+        ;; the `next-fn` is just `hmc-step` partially applied with
+        ;; values that remain constant during the execution of the
+        ;; algorithm.
         next-fn (partial hmc-step mvn T epsilon potential gradient)
+
+        ;; use the first iteration of the algorithm as the initial
+        ;; assignment of variables that is visible to the caller
         initial-assignments (next-fn initial)]
 
     [initial-assignments next-fn]))
@@ -848,7 +903,7 @@
   (let [model (path->model "/home/rmc/Documents/canada/ubc/cw/2018.fall/539/foppl/resources/examples/gibbs/p1.foppl")
         samples-seq (perform algo model)
         mu (:name (:E model))
-        samples (take 400000 samples-seq)
+        samples (take 100000 samples-seq)
         values (map (fn [m] (get m mu)) samples)
         mean (anglican/mean values)]
     (println "Expected value of mu:" mean)))
@@ -857,7 +912,7 @@
   (let [model (path->model "/home/rmc/Documents/canada/ubc/cw/2018.fall/539/foppl/resources/examples/gibbs/p2.foppl")
         samples-seq (perform algo model)
         [slope bias] (map :name (:args (:E model)))
-        samples (take 200000 samples-seq)
+        samples (take 100000 samples-seq)
 
         slope-values (map (fn [m] (get m slope)) samples)
         slope-mean (anglican/mean slope-values)
