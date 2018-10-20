@@ -781,21 +781,21 @@
     ;; reduced.
     [(second (expand Xt)) Rt]))
 
-(defn- hamiltonian [potential xs rs]
+(defn- hamiltonian [M potential xs rs]
   "Calculates the Hamiltonian for a system where the assignmemnts of
   random variables is `xs` and the momentum is `rs`."
   (let [;; calculate the potential energy of the system
         Ux (apply potential xs)
-        r-squared (map #(* % %) rs)
-        sum-r-squared (reduce + r-squared)
 
         ;; kinetic energy
+        r-squared-over-sd (map #(/ (* % %) M) rs)
+        sum-r-squared (reduce + r-squared-over-sd)
         Kr (* 0.5 sum-r-squared)]
 
     ;; the Hamiltonian is defined as H(X, R) = U(X) + K(R)
     (+ Ux Kr)))
 
-(defn- hmc-step [mvn T epsilon potential {args :args :as potential-gradient} xs]
+(defn- hmc-step [M mvn T epsilon potential {args :args :as potential-gradient} xs]
   "Performs a single step of the Hamiltonian Monte Carlo
   algorithm. Given a set of assignments `xs` this function will
   produce the next one. See the Introduction to Probabilistic
@@ -816,7 +816,7 @@
         [xs' R'] (leapfrog xs R T epsilon potential-gradient project)
 
         u (anglican/sample* uniform01)
-        H (partial hamiltonian potential)
+        H (partial hamiltonian M potential)
 
         ;; calculate whether or not we should accept this set of
         ;; assignments
@@ -846,7 +846,7 @@
         ;; the `next-fn` is just `hmc-step` partially applied with
         ;; values that remain constant during the execution of the
         ;; algorithm.
-        next-fn (partial hmc-step mvn T epsilon potential gradient)
+        next-fn (partial hmc-step M mvn T epsilon potential gradient)
 
         ;; use the first iteration of the algorithm as the initial
         ;; assignment of variables that is visible to the caller
