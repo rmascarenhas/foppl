@@ -445,6 +445,14 @@
 ;; HAMILTONIAN MONTE CARLO SAMPLING ;;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+;; a gradient represents an anonymous Clojure function that computes
+;; the gradient of some other pre-computed function.  In the case of
+;; Hamiltonian Monte Carlo, we want to calculate partial derivatives
+;; of the potential energy of the model at different
+;; iterations. `args` is the sequence of formal parameters that the
+;; lambda takes.
+(defrecord gradient [lambda args])
+
 ;; This is responsible for transforming an expression with `observe*`
 ;; function applications into applications of `normpdf`, so a to make
 ;; the function differentiable using the `autodiff` library.
@@ -572,19 +580,21 @@
   (visit-observe [_ _]
     (utils/ice "No `observe` should exist when qualifying normpdf")))
 
-(defn- init-hmc [{{P :P Y :Y} :G :as model} latent initial]
-  "Initializes the Hamiltonian Monte Carlo sampling algorithm. Uses
-  hard-coded parameters for the number of iterations used in the
-  leapfrog integration (`T`); `epsilon` and the mass `M` of the system
-  are also fixed. Returns the initial set of assignments to be used
-  when sampling and a function that, given one set of assignments,
-  produces the next."
-  (let [ ;; parameters of the HMC algorithm
-        T 10
-        epsilon 0.1
-        M 1
+(defn- apply-gradient [{lambda :lambda args :args} xs]
+  "Given a gradient and a map of assignments `xs`, this function will
+  return the gradient 'vector' as a map that associates random
+  variable names with their partial derivatives."
+  (let [params (map #(get xs %) args)
+        [_ grad] (apply lambda params)]
+    grad))
 
-        ;; pairs up additions in an expression, i.e., (+ 1 2 3 4)
+(defn- potential-energy-gradient [{{P :P Y :Y} :G} latent]
+  "Generates a gradient anonymous function (represented as a
+  `gradient` record with accompanying sequence of parameters) that,
+  when invoked, produces a list of partial derivatives with respect to
+  each random variable in the potential energy of the graphical system
+  in a Hamiltonian Monte Carlo sampling algorithm."
+  (let [ ;; pairs up additions in an expression, i.e., (+ 1 2 3 4)
         ;; becomes (+ 1 (+ 2 (+ 3 4))). This is so that the automatic
         ;; differention library will be able to produce partial
         ;; derivatives for the potential energy of the system.
@@ -634,7 +644,8 @@
         Ey (ast/fn-application. '+ Ey-terms)
         Eu (ast/fn-application. '* [(ast/constant. -1.0) (ast/fn-application. '+ [(transform-pdf Ex) (transform-pdf Ey)])])
 
-        gradient-args (into [] (map (fn [name] (ast/variable. name)) latent))
+        gradient-formal-args (into [] latent)
+        gradient-args (map #(ast/variable. %) gradient-formal-args)
 
         ;; generate an anonymous function that calculates the
         ;; potential energy of the model.
@@ -654,7 +665,27 @@
         gradient-fn (-> qualified-gradient
                         formatter/to-str
                         edn/read-string
-                        eval)
+                        eval)]
+
+    ;; returns an instance of the `gradient` record with the anonymous
+    ;; function computed above, and the list of formal arguments it
+    ;; expects.
+    (gradient. gradient-fn gradient-formal-args)))
+
+(defn- init-hmc [{{P :P Y :Y} :G :as model} latent initial]
+  "Initializes the Hamiltonian Monte Carlo sampling algorithm. Uses
+  hard-coded parameters for the number of iterations used in the
+  leapfrog integration (`T`); `epsilon` and the mass `M` of the system
+  are also fixed. Returns the initial set of assignments to be used
+  when sampling and a function that, given one set of assignments,
+  produces the next."
+  (let [ ;; parameters of the HMC algorithm
+        T 10
+        epsilon 0.1
+        M 1
+
+        gradient (potential-energy-gradient model latent)
+        applied (apply-gradient gradient initial)
         ]))
 
 
