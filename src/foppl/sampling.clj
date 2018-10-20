@@ -506,10 +506,11 @@
   (visit-fn-application [v {name :name args :args}]
     (cond
       ;; if we are visiting an `observe*` call, transform the node to
-      ;; an application of `normpdf`, where the first two parameters
-      ;; are the arguments to the normal distribution, and the last
-      ;; argument is the observed value.
-      (= name 'anglican.runtime/observe*) (ast/fn-application. 'normpdf (conj (accept (first args) v) (second args)))
+      ;; an application of `normpdf`, where the first parameter is the
+      ;; observed value, and the remaining are the parameters of the
+      ;; distribution -- in this case, the mean and standard
+      ;; deviation.
+      (= name 'anglican.runtime/observe*) (ast/fn-application. 'normpdf (cons (second args) (accept (first args) v)))
 
       ;; if this is a visit to a distribution object, return its the
       ;; distribution parameters.  This follows the same signature of
@@ -532,12 +533,12 @@
   returning the resulting collection."
   (map (fn [n] (accept n v)) coll))
 
-;; This visitor qualifies calls to the `normpdf` function in an
-;; arbitrarily complex expression.  Used in the output of the
-;; derivative-generating function, `autodiff/perform`.
-(defrecord normpdf-qualifier-visitor [])
+;; This visitor is able to rename functions in arbitrarily complex expressions.
+;; After an expression is visited by this visited by this visitor, every function
+;; call to `from` becomes a function call to `to`
+(defrecord rename-fn-visitor [from to])
 
-(extend-type normpdf-qualifier-visitor
+(extend-type rename-fn-visitor
   ast/visitor
 
   (visit-literal-vector [v {es :es}]
@@ -569,9 +570,9 @@
   (visit-if-cond [v {predicate :predicate then :then else :else}]
     (ast/if-cond. (accept predicate v) (accept then v) (accept else v)))
 
-  (visit-fn-application [v {name :name args :args}]
-    (if (= name 'normpdf)
-      (ast/fn-application. 'foppl.autodiff/normpdf (accept-coll args v))
+  (visit-fn-application [{from :from to :to :as v} {name :name args :args}]
+    (if (= name from)
+      (ast/fn-application. to (accept-coll args v))
       (ast/fn-application. name (accept-coll args v))))
 
   (visit-sample [_ _]
@@ -584,8 +585,7 @@
   "Given a gradient and a map of assignments `xs`, this function will
   return the gradient 'vector' as a map that associates random
   variable names with their partial derivatives."
-  (let [params (map #(get xs %) args)
-        [_ grad] (apply lambda params)]
+  (let [[_ grad] (apply lambda xs)]
     grad))
 
 (defn- potential-energy-gradient [{{P :P Y :Y} :G} latent]
@@ -620,57 +620,164 @@
                                ;; and a recursive call to the rest of the expressions.
                                :else (add [(first args) (pair-up (add (rest args)))]))))
 
+
+        ;; helper higher-order function that, given a two function
+        ;; names, will produce a function that, when invoked with an
+        ;; AST node `n`, will replace every call of `from` to calls of
+        ;; `to` in `n`.
+        rename-fn (fn [from to] (fn [n] (accept n (rename-fn-visitor. from to))))
+
+        ;; manipulate calls to `log` to be `Math/log` or
+        ;; vice-versa. When differentiating, we want the function to
+        ;; be called `log`, as understanded by the `autodiff` library.
+        ;; When evaluating an anonymous function, we want it to be
+        ;; fully qualified.
+        no-math-log (rename-fn 'Math/log 'log)
+        qualify-log (rename-fn 'log 'Math/log)
+
         ;; helper function to transform an expression in order to make
         ;; it differentiable.  Used in the potential energy
         ;; formula. First, changes calls to `observe*` to calls to
         ;; `normpdf`, and then it pairs up additions
         transform-pdf (fn [n] (-> n
                                  (accept (observe-normpdf-visitor.))
-                                 pair-up-addition))
+                                 pair-up-addition
+                                 no-math-log))
+
+        ;; helper function that, given an AST representation of an
+        ;; anonymous function definition, compiles it to a Clojure
+        ;; lambda.
+        to-lambda #(-> %
+                       formatter/to-str
+                       edn/read-string
+                       eval)
 
         ;; given an AST node `n`, this function will qualify
         ;; applications of `normpdf`, appending the namespace where
         ;; its implementation can be found: `foppl.autodiff/normpdf`.
         ;; This is so that Clojure can successfully compile the
         ;; derivative-calculating function into an anonymous function.
-        qualify-normpdf (fn [n] (accept n (normpdf-qualifier-visitor.)))
+        qualify-normpdf (rename-fn 'normpdf 'foppl.autodiff/normpdf)
 
         ;; potential energy formula. See section 3.4.1 of the book for a representation
         ;; in mathematical notation
         observed-vars (keys Y)
+
+        ;; helper function that calculates the log of an expression
+        ;; given.
+        math-log #(ast/fn-application. 'Math/log [%])
+
         Ex-terms (map (fn [x] (get P x)) latent)
         Ey-terms (map (fn [y] (ast/substitute y (get Y y) (get P y))) observed-vars)
+
+        ;; calculate the log of each of the terms in Ex and Ey
+        Ex-terms (map math-log Ex-terms)
+        Ey-terms (map math-log Ey-terms)
+
         Ex (ast/fn-application. '+ Ex-terms)
         Ey (ast/fn-application. '+ Ey-terms)
-        Eu (ast/fn-application. '* [(ast/constant. -1.0) (ast/fn-application. '+ [(transform-pdf Ex) (transform-pdf Ey)])])
 
-        gradient-formal-args (into [] latent)
-        gradient-args (map #(ast/variable. %) gradient-formal-args)
+        ;; arguments passed to the function that calculates potential
+        ;; energy (or its partial derivatives) is the set of latent
+        ;; variables of the model.
+        energy-formal-args (into [] latent)
+        energy-args (map #(ast/variable. %) energy-formal-args)
+
+        ;; formula for the potential energy.
+        Eu (ast/fn-application. '* [(ast/constant. -1.0) (ast/fn-application. '+ [Ex Ey])])
+
+        ;; make a lambda that calculates the potential energy of the
+        ;; system given a set of assignments to the random
+        ;; variables. Before parsing to a Clojure anonymous function,
+        ;; qualify every call to Anglican functions so Clojure will be
+        ;; able to resolve all symbols.
+        Eu-defn (ast/definition. nil energy-args (accept Eu (anglican-qualify-visitor.)))
+        _ (println "Eu:" (formatter/to-str Eu-defn))
+        Eu-fn (to-lambda Eu-defn)
+
+        ;; potential energy formula, transformed in such a way as to
+        ;; be differentiable by the `autodiff` library.
+        diff-Eu (ast/fn-application. '* [(ast/constant. -1.0) (ast/fn-application. '+ [(transform-pdf Ex) (transform-pdf Ey)])])
 
         ;; generate an anonymous function that calculates the
         ;; potential energy of the model.
-        Eu-fn (ast/definition. nil gradient-args Eu)
+        diff-Eu-fn (ast/definition. nil energy-args diff-Eu)
 
         ;; generate a function that computes the gradient of the
         ;; potential energy of the model with respect to the latent
         ;; variables.
-        gradient-Eu (autodiff/perform-tree Eu-fn)
+        gradient-Eu (autodiff/perform-tree diff-Eu-fn)
 
         ;; qualify calls to `normpdf` to be independent of evaluation
         ;; namespace.
-        qualified-gradient (qualify-normpdf (ast/to-tree gradient-Eu))
+        qualified-gradient (-> (ast/to-tree gradient-Eu)
+                               qualify-normpdf
+                               qualify-log)
 
         ;; compile the gradient function to a Clojure anonymous
         ;; function.
-        gradient-fn (-> qualified-gradient
-                        formatter/to-str
-                        edn/read-string
-                        eval)]
+        gradient-fn (to-lambda qualified-gradient)]
 
     ;; returns an instance of the `gradient` record with the anonymous
     ;; function computed above, and the list of formal arguments it
     ;; expects.
-    (gradient. gradient-fn gradient-formal-args)))
+    [Eu-fn (gradient. gradient-fn energy-formal-args)]))
+
+(defn- mvn-mass-matrix [n M]
+  (let [matrix (reduce #(conj % (assoc (into [] (repeat n 0)) %2 M)) [] (range n))]
+    (anglican/mvn (repeat n 0) matrix)))
+
+(defn- scalar-vector-op [f scalar vector]
+  (mapv #(f scalar %) vector))
+
+(defn- vector-op [f va vb]
+  {:pre [(= (count va) (count vb))]}
+
+  (let [zipped (map vector va vb)]
+    (mapv (fn [[a b]] (f a b)) zipped)))
+
+(defn- leapfrog-iter [epsilon grad [Rs Xs] t]
+  (let [Xt-1 (get Xs (- t 1))
+        Rt-half (get Rs (- t 1/2))
+
+        Xs' (assoc Xs t (vector-op + Xt-1 (scalar-vector-op * epsilon Rt-half)))
+        Rs' (assoc Rs (+ t 1/2) (vector-op - Rt-half (scalar-vector-op * (- epsilon) (grad (get Xs' t)))))]
+
+    [Rs' Xs']))
+
+(defn- leapfrog [xs R0 T epsilon {args :args :as potential-gradient} project]
+  (let [grad #(project (apply-gradient potential-gradient %))
+
+        Xs {0 (project xs)}
+        Rs {1/2 (vector-op - R0 (scalar-vector-op * (* -0.5 epsilon) (grad (get Xs 0))))}
+
+        leapfrog-fn (partial leapfrog-iter epsilon grad)
+        [Rs' Xs'] (reduce leapfrog-fn [Rs Xs] (range 1 T))
+
+        Xt (vector-op + (get Xs' (- T 1)) (scalar-vector-op * epsilon (get Rs' (- T 1/2))))
+        Rt (vector-op - (get Rs' (- T 1/2)) (scalar-vector-op * (* -0.5 epsilon) (grad Xt)))
+
+        expand (fn [coll] (reduce (fn [[i m] name] [(inc i) (assoc m name (nth coll i))]) [0 {}] args))]
+
+    [(second (expand Xt)) Rt]))
+
+(defn- hamiltonian [potential xs rs]
+  (let [Ux (apply potential xs)
+        r-squared (map #(* % %) rs)
+        sum-r-squared (reduce + r-squared)
+        Kr (* 0.5 sum-r-squared)]
+    (+ Ux Kr)))
+
+(defn- hmc-step [mvn T epsilon potential {args :args :as potential-gradient} xs]
+  (let [project (fn [assignments] (reduce (fn [coll name] (conj coll (get assignments name))) [] args))
+        R (anglican/sample* mvn)
+        [xs' R'] (leapfrog xs R T epsilon potential-gradient project)
+
+        u (anglican/sample* uniform01)
+        H (partial hamiltonian potential)
+        exp-hamiltonian (Math/exp (- (H (project xs) R) (H (project xs') R')))]
+
+    (if (< u exp-hamiltonian) xs' xs)))
 
 (defn- init-hmc [{{P :P Y :Y} :G :as model} latent initial]
   "Initializes the Hamiltonian Monte Carlo sampling algorithm. Uses
@@ -683,11 +790,14 @@
         T 10
         epsilon 0.1
         M 1
+        mvn (mvn-mass-matrix (count latent) M)
 
-        gradient (potential-energy-gradient model latent)
-        applied (apply-gradient gradient initial)
-        ]))
+        [potential gradient] (potential-energy-gradient model latent)
 
+        next-fn (partial hmc-step mvn T epsilon potential gradient)
+        initial-assignments (next-fn initial)]
+
+    [initial-assignments next-fn]))
 
 (defn- sampling-lazy-seq [initial gen-fn]
   "Generates a lazy sequence for an initial map of
@@ -734,18 +844,18 @@
          foppl.scope/perform
          foppl.graphical/perform)))
 
-(defn test-p1 []
+(defn test-p1 [algo]
   (let [model (path->model "/home/rmc/Documents/canada/ubc/cw/2018.fall/539/foppl/resources/examples/gibbs/p1.foppl")
-        samples-seq (perform :gibbs model)
+        samples-seq (perform algo model)
         mu (:name (:E model))
-        samples (take 200000 samples-seq)
+        samples (take 400000 samples-seq)
         values (map (fn [m] (get m mu)) samples)
         mean (anglican/mean values)]
     (println "Expected value of mu:" mean)))
 
-(defn test-p2 []
+(defn test-p2 [algo]
   (let [model (path->model "/home/rmc/Documents/canada/ubc/cw/2018.fall/539/foppl/resources/examples/gibbs/p2.foppl")
-        samples-seq (perform :gibbs model)
+        samples-seq (perform algo model)
         [slope bias] (map :name (:args (:E model)))
         samples (take 200000 samples-seq)
 
@@ -757,9 +867,9 @@
     (println "Expected value of slope:" slope-mean)
     (println "Expected value of bias:" bias-mean)))
 
-(defn test-p3 []
+(defn test-p3 [algo]
   (let [model (path->model "/home/rmc/Documents/canada/ubc/cw/2018.fall/539/foppl/resources/examples/gibbs/p3.foppl")
-        samples-seq (perform :gibbs model)
+        samples-seq (perform algo model)
 
         ;; destructure deterministic expression to get name of the
         ;; list of random variables in the vector
@@ -774,9 +884,9 @@
 
     (println "Probability of being in the same cluster:" (float prob-equal-values))))
 
-(defn test-p4 []
+(defn test-p4 [algo]
   (let [model (path->model "/home/rmc/Documents/canada/ubc/cw/2018.fall/539/foppl/resources/examples/gibbs/p4.foppl")
-        samples-seq (perform :gibbs model)
+        samples-seq (perform algo model)
 
         ;; destructure deterministic expression to get name of
         ;; 'is-cloudy' and the two related branches of the conditional
@@ -788,9 +898,9 @@
 
     (println "Probability that it is raining:" (float prob-is-raining))))
 
-(defn test-p5 []
+(defn test-p5 [algo]
   (let [model (path->model "/home/rmc/Documents/canada/ubc/cw/2018.fall/539/foppl/resources/examples/gibbs/p5.foppl")
-        samples-seq (perform :gibbs model)
+        samples-seq (perform algo model)
 
         ;; destructure deterministic expression to get name of
         ;; 'is-cloudy' and the two related branches of the conditional
