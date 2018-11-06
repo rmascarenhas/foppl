@@ -833,8 +833,8 @@
   produces the next."
   (let [ ;; parameters of the HMC algorithm
         T 10
-        epsilon 0.1
-        M 1
+        epsilon 0.01
+        M 0.3
         mvn (mvn-mass-matrix (count latent) M)
 
         ;; generate functions to compute the potential energy of the
@@ -903,7 +903,8 @@
   (let [model (path->model "/home/rmc/Documents/canada/ubc/cw/2018.fall/539/foppl/resources/examples/gibbs/p1.foppl")
         samples-seq (perform algo model)
         mu (:name (:E model))
-        samples (take 100000 samples-seq)
+        burn-in (take 10000 samples-seq)
+        samples (take 50000 samples-seq)
         values (map (fn [m] (get m mu)) samples)
         mean (anglican/mean values)]
     (println "Expected value of mu:" mean)))
@@ -912,7 +913,7 @@
   (let [model (path->model "/home/rmc/Documents/canada/ubc/cw/2018.fall/539/foppl/resources/examples/gibbs/p2.foppl")
         samples-seq (perform algo model)
         [slope bias] (map :name (:args (:E model)))
-        samples (take 100000 samples-seq)
+        samples (take 50000 samples-seq)
 
         slope-values (map (fn [m] (get m slope)) samples)
         slope-mean (anglican/mean slope-values)
@@ -961,7 +962,8 @@
         ;; 'is-cloudy' and the two related branches of the conditional
         {[{x :name} {y :name}] :args} (:E model)
 
-        samples (take 2000 samples-seq)
+        _ (take 10000 samples-seq)
+        samples (take 100000 samples-seq)
         x-values (map (fn [m] (get m x)) samples)
         y-values (map (fn [m] (get m y)) samples)]
 
