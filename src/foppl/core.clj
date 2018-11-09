@@ -60,11 +60,7 @@
            desugar/perform
            scope/perform
            graphical/perform
-           operations/print-graph
-           ;; (sampling/perform :hmc)
-           ;; (take 3)
-           ;; println
-           )
+           operations/print-graph)
       (catch clojure.lang.ExceptionInfo e
         (let [type (-> e ex-data :type)
               msg (-> (.getMessage e))]

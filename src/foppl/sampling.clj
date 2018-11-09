@@ -13,8 +13,8 @@
             [foppl.toposort :as toposort]
             [foppl.autodiff :as autodiff]
             [foppl.utils :as utils])
-  (:import [foppl.ast constant variable if-cond fn-application definition literal-vector
-            literal-map definition local-binding]))
+  (:import [foppl.ast constant variable if-cond fn-application lambda literal-vector
+            literal-map procedure local-binding]))
 
 (def ^:private uniform01
   (anglican/uniform-continuous 0 1))
@@ -72,8 +72,11 @@
   (visit-variable [_ variable]
     variable)
 
-  (visit-definition [_ _]
+  (visit-procedure [_ _]
     (utils/ice "No definitions allowed in determistic language (during Anglican qualification)"))
+
+  (visit-lambda [_ _]
+    (utils/ice "No lambdas allowed in determistic language (during Anglican qualification)"))
 
   (visit-local-binding [_ _]
     (utils/ice "No local bindings allowed in deterministic language (during Anglican qualification)"))
@@ -135,8 +138,8 @@
   (visit-literal-map [{registry :registry} literal-map]
     [literal-map registry])
 
-  (visit-definition [{registry :registry} definition]
-    [definition registry])
+  (visit-procedure [{registry :registry} procedure]
+    [procedure registry])
 
   (visit-local-binding [{registry :registry} local-binding]
     [local-binding registry])
@@ -352,55 +355,55 @@
         ;; containing the values of all free variables in the
         ;; expression.
         make-lambda (fn [n] (let [;; let `m` be the name of the map taken as parameter
-                                 ;; in this anonymous function
-                                 m 'm
+                                  ;; in this anonymous function
+                                  m 'm
 
-                                 ;; the free variables of the expression are going to be
-                                 ;; random variables referenced in it
-                                 random-vars (ast/free-vars n)
+                                  ;; the free variables of the expression are going to be
+                                  ;; random variables referenced in it
+                                  random-vars (ast/free-vars n)
 
-                                 ;; generate a fresh name for the map of constants
-                                 constants-map-name (ast/fresh-sym "constants")
+                                  ;; generate a fresh name for the map of constants
+                                  constants-map-name (ast/fresh-sym "constants")
 
-                                 ;; extract the updated expression and map of constants in the
-                                 ;; expression. This is an unfortunate consequence of the fact that
-                                 ;; we don't want constant values like "(normal 1 1)" to be interpreted
-                                 ;; as function calls and recomputed on every application of the
-                                 ;; generated function.
-                                 [link constants] (extract-constants n constants-map-name)
+                                  ;; extract the updated expression and map of constants in the
+                                  ;; expression. This is an unfortunate consequence of the fact that
+                                  ;; we don't want constant values like "(normal 1 1)" to be interpreted
+                                  ;; as function calls and recomputed on every application of the
+                                  ;; generated function.
+                                  [link constants] (extract-constants n constants-map-name)
 
-                                 ;; fully qualify distribution functions so that the link function
-                                 ;; can be compiled to a Clojure anonymous function regardless of
-                                 ;; the functions referred in this namespace
-                                 anglican-qualify (fn [n] (accept n (anglican-qualify-visitor.)))
-                                 link (anglican-qualify link)
+                                  ;; fully qualify distribution functions so that the link function
+                                  ;; can be compiled to a Clojure anonymous function regardless of
+                                  ;; the functions referred in this namespace
+                                  anglican-qualify (fn [n] (accept n (anglican-qualify-visitor.)))
+                                  link (anglican-qualify link)
 
-                                 ;; parameter to be passed to the anonymous function
-                                 assignments (ast/variable. m)
+                                  ;; parameter to be passed to the anonymous function
+                                  assignments (ast/variable. m)
 
-                                 ;; AST variable node representing the map of constants
-                                 constants-map (ast/variable. constants-map-name)
+                                  ;; AST variable node representing the map of constants
+                                  constants-map (ast/variable. constants-map-name)
 
-                                 ;; substitute free variables in the expression by accesses to the
-                                 ;; map of assignments that is to be passed when the generated function
-                                 ;; is invoked
-                                 map-name (fn [name] (ast/fn-application. 'symbol [(ast/constant. (str name))]))
-                                 get-var (fn [name] (ast/fn-application. 'get [assignments (map-name name)]))
-                                 substitute-random-v (fn [e name] (ast/substitute name (get-var name) e))
-                                 substituted-link-fn (reduce substitute-random-v link random-vars)
+                                  ;; substitute free variables in the expression by accesses to the
+                                  ;; map of assignments that is to be passed when the generated function
+                                  ;; is invoked
+                                  map-name (fn [name] (ast/fn-application. 'symbol [(ast/constant. (str name))]))
+                                  get-var (fn [name] (ast/fn-application. 'get [assignments (map-name name)]))
+                                  substitute-random-v (fn [e name] (ast/substitute name (get-var name) e))
+                                  substituted-link-fn (reduce substitute-random-v link random-vars)
 
-                                 ;; generate an AST node representing the anonymous function we want
-                                 lambda (ast/definition. nil [constants-map assignments] substituted-link-fn)
-                                 serialize (fn [n] (formatter/to-str n))
+                                  ;; generate an AST node representing the anonymous function we want
+                                  lambda (ast/lambda. nil [constants-map assignments] substituted-link-fn)
+                                  serialize (fn [n] (formatter/to-str n))
 
-                                 ;; to transfor this into a Clojure lambda, we serialize our AST
-                                 ;; representation and have Clojure evaluate the expression
-                                 to-clj (fn [n] (eval (edn/read-string (serialize n))))]
+                                  ;; to transfor this into a Clojure lambda, we serialize our AST
+                                  ;; representation and have Clojure evaluate the expression
+                                  to-clj (fn [n] (eval (edn/read-string (serialize n))))]
 
-                             ;; partially apply the lambda with the map of constants so that users
-                             ;; of the function need only pass the map of assignments, which vary
-                             ;; on different iterations of the sampling algorithm
-                             (partial (to-clj lambda) constants)))
+                              ;; partially apply the lambda with the map of constants so that users
+                              ;; of the function need only pass the map of assignments, which vary
+                              ;; on different iterations of the sampling algorithm
+                              (partial (to-clj lambda) constants)))
 
         ;; generate a map from random-variable => Clojure anonymous function
         compiled-P (reduce (fn [m [name n]] (assoc m name (make-lambda n))) {} P)
@@ -494,8 +497,8 @@
   (visit-variable [_ variable]
     variable)
 
-  (visit-definition [_ _]
-    (utils/ice "Found definition while transforming normpdf"))
+  (visit-procedure [_ _]
+    (utils/ice "Found function definition while transforming normpdf"))
 
   (visit-local-binding [_ _]
     (utils/ice "Found local binding while transforming normpdf"))
@@ -559,8 +562,11 @@
   (visit-variable [_ variable]
     variable)
 
-  (visit-definition [v {name :name args :args e :e}]
-    (ast/definition. name args (accept e v)))
+  (visit-procedure [v {name :name args :args e :e}]
+    (ast/procedure. name args (accept e v)))
+
+  (visit-lambda [v {name :name args :args e :e}]
+    (ast/lambda. name args (accept e v)))
 
   (visit-local-binding [v {bindings :bindings es :es}]
     (let [pairs (partition 2 bindings)
@@ -674,7 +680,7 @@
         ;; variables. Before parsing to a Clojure anonymous function,
         ;; qualify every call to Anglican functions so Clojure will be
         ;; able to resolve all symbols.
-        Eu-defn (ast/definition. nil energy-args (accept Eu (anglican-qualify-visitor.)))
+        Eu-defn (ast/lambda. nil energy-args (accept Eu (anglican-qualify-visitor.)))
         Eu-fn (to-lambda Eu-defn)
 
         ;; potential energy formula, transformed in such a way as to
@@ -683,7 +689,7 @@
 
         ;; generate an anonymous function that calculates the
         ;; potential energy of the model.
-        diff-Eu-fn (ast/definition. nil energy-args diff-Eu)
+        diff-Eu-fn (ast/lambda. nil energy-args diff-Eu)
 
         ;; generate a function that computes the gradient of the
         ;; potential energy of the model with respect to the latent

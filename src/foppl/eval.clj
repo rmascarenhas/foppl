@@ -64,7 +64,10 @@
   (visit-literal-map [_ _]
     nil)
 
-  (visit-definition [_ _]
+  (visit-procedure [_ _]
+    nil)
+
+  (visit-lambda [_ _]
     nil)
 
   (visit-local-binding [_ _]
@@ -125,8 +128,8 @@
   (visit-literal-map [_ literal-map]
     literal-map)
 
-  (visit-definition [_ definition]
-    definition)
+  (visit-procedure [_ procedure]
+    procedure)
 
   (visit-local-binding [_ local-binding]
     local-binding)
@@ -231,8 +234,11 @@
   (visit-literal-map [v {es :es}]
     (utils/ice "literal maps not allowed in deterministic language"))
 
-  (visit-definition [_ definition]
+  (visit-procedure [_ _]
     (utils/ice "procedure definitions not allowed in deterministic language"))
+
+  (visit-lambda [_ _]
+    (utils/ice "lambda definitions not allowed in deterministic language"))
 
   (visit-local-binding [_ local-binding]
     (utils/ice "local bindings not allowed in deterministic language"))

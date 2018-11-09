@@ -7,7 +7,7 @@
             [clojure.string :as s]
             [clojure.edn :as edn]
             [anglican.runtime :as anglican :refer [exp log sin cos]])
-  (:import [foppl.ast definition constant variable fn-application if-cond literal-map literal-vector local-binding]))
+  (:import [foppl.ast lambda constant variable fn-application if-cond literal-map literal-vector local-binding]))
 
 (defn normpdf [y mu sigma]
   "Log PDF of a normal (Gaussian) distribution"
@@ -64,7 +64,7 @@
         e (last f)
         parsed-e (ast/to-tree e)
         {e :e} (desugar/perform {:defs nil :e parsed-e})]
-    (ast/definition. nil args e)))
+    (ast/lambda. nil args e)))
 
 ;; an equation is an element of the tape that is produced by
 ;; traversing a function's definition and building its corresponding
@@ -164,8 +164,11 @@
   (visit-literal-map [_ m]
     (utils/foppl-error "autodiff error: literal maps not supported"))
 
-  (visit-definition [_ _]
+  (visit-procedure [_ _]
     (utils/foppl-error "autodiff error: unexpected function definition"))
+
+  (visit-lambda [_ _]
+    (utils/foppl-error "autodiff error: unexpected lambda"))
 
   (visit-local-binding [_ _]
     (utils/foppl-error "autodiff error: local bindings not supported"))
@@ -212,8 +215,8 @@
           ;; associate if-equation to the result equations of each
           ;; branch of the conditional
           add-cond (fn [tape] (let [last-eq (last tape)
-                                   without-last (pop tape)]
-                               (conj without-last (condition-on last-eq (:name if-eq)))))
+                                    without-last (pop tape)]
+                                (conj without-last (condition-on last-eq (:name if-eq)))))
 
           then-tape (add-cond then-tape)
           else-tape (add-cond else-tape)
@@ -254,8 +257,8 @@
           ;; a new variable node pointing to the name of the equation
           ;; being introduced.
           eq-to-ast(fn [{name :name n :n :as eq}] (if (volatile-equation? eq)
-                                                   n
-                                                   (ast/variable. name)))
+                                                    n
+                                                    (ast/variable. name)))
           fn-args (map eq-to-ast all-args-eqs)
 
           ;; add to the tape only the argument-related equations that
@@ -283,7 +286,7 @@
   )
 
 ;; `delta-visitor` is responsible for visiting an equation
-;; (represented as a function applicationl) and calculating a
+;; (represented as a function application) and calculating a
 ;; collection of bindings to be used in the derivative-generating
 ;; function. Only functions whose derivatives are known (i.e.,
 ;; declared in the `derivatives` map) are calculated. Equations have
@@ -312,8 +315,11 @@
   (visit-literal-map [_ _]
     (utils/foppl-error "autodiff error: literal maps not supported"))
 
-  (visit-definition [_ _]
+  (visit-procedure [_ _]
     (utils/foppl-error "autodiff error: unexpected function definition"))
+
+  (visit-lambda [_ _]
+    (utils/foppl-error "autodiff error: unexpected lambda"))
 
   (visit-local-binding [_ _]
     (utils/foppl-error "autodiff error: local bindings not supported"))
@@ -522,7 +528,7 @@
         ;; is a map of partial derivatives.
         e (ast/local-binding. bindings [(ast/literal-vector. [final-name partial-derivs])])]
 
-    (ast/definition. nil params e)))
+    (ast/lambda. nil params e)))
 
 (defn- serialize [f]
   "Given a function definition represented as an AST node, this

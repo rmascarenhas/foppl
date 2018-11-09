@@ -3,7 +3,7 @@
   defined in this namespace to find out each desugaring step applied."
   (:require [foppl.ast :as ast :refer [accept]]
             [foppl.utils :as utils])
-  (:import [foppl.ast constant variable fn-application definition local-binding foreach loops if-cond sample observe program]))
+  (:import [foppl.ast constant variable fn-application procedure local-binding foreach loops if-cond sample observe program]))
 
 ;; the data structure desugaring visitor translates every literal array ([e1, e2, ...]) to
 ;; a function application of 'vector'. In addition, it also transforms every literal map
@@ -31,8 +31,11 @@
   (visit-literal-map [v literal-map]
     (ast/fn-application. 'hash-map (accept-coll (:es literal-map) v)))
 
-  (visit-definition [v {name :name args :args e :e}]
-    (ast/definition. name args (accept e v)))
+  (visit-procedure [v {name :name args :args e :e}]
+    (ast/procedure. name args (accept e v)))
+
+  (visit-lambda [_ _]
+    (utils/foppl-error "Lambdas are not a part of FOPPL"))
 
   (visit-local-binding [v {bindings :bindings es :es}]
     (let [pairs (partition 2 bindings)
@@ -59,8 +62,7 @@
     (ast/sample. (accept dist v)))
 
   (visit-observe [v {dist :dist val :val}]
-    (ast/observe. (accept dist v) (accept val v)))
-  )
+    (ast/observe. (accept dist v) (accept val v))))
 
 ;; let forms are allowed to contain multiple bindings at the same time. In addition,
 ;; multiple expressions can be passed to be "body" of a 'let' expression. However,
@@ -88,8 +90,11 @@
   (visit-foreach [_ foreach]
     (utils/ice "foreach should have been desugared before processing 'let' forms"))
 
-  (visit-definition [v {name :name args :args e :e}]
-    (ast/definition. name args (accept e v)))
+  (visit-procedure [v {name :name args :args e :e}]
+    (ast/procedure. name args (accept e v)))
+
+  (visit-lambda [_ _]
+    (utils/foppl-error "Lambdas are not part of FOPPL"))
 
   (visit-local-binding [v {bindings :bindings es :es}]
     {:pre [(even? (count bindings)) (> (count es) 0)]}
@@ -168,8 +173,11 @@
   (visit-literal-map [v literal-map]
     (accept-coll (:es literal-map) v))
 
-  (visit-definition [v {name :name args :args e :e}]
-    (ast/definition. name args (accept e v)))
+  (visit-procedure [v {name :name args :args e :e}]
+    (ast/procedure. name args (accept e v)))
+
+  (visit-lambda [_ _]
+    (utils/foppl-error "Lambdas are not part of FOPPL"))
 
   (visit-local-binding [v {bindings :bindings es :es}]
     (let [pairs (partition 2 bindings)
@@ -233,8 +241,11 @@
   (visit-literal-map [v literal-map]
     (accept-coll (:es literal-map) v))
 
-  (visit-definition [v {name :name args :args e :e}]
-    (ast/definition. name args (accept e v)))
+  (visit-procedure [v {name :name args :args e :e}]
+    (ast/procedure. name args (accept e v)))
+
+  (visit-lambda [_ _]
+    (utils/foppl-error "Lambdas are not part of FOPPL"))
 
   (visit-local-binding [v {bindings :bindings es :es}]
     (let [pairs (partition 2 bindings)
@@ -329,8 +340,11 @@
   (visit-literal-map [v literal-map]
     (accept-coll (:es literal-map) v))
 
-  (visit-definition [v {name :name args :args e :e}]
-    (ast/definition. name (accept-coll args v) (accept e v)))
+  (visit-procedure [v {name :name args :args e :e}]
+    (ast/procedure. name (accept-coll args v) (accept e v)))
+
+  (visit-lambda [_ _]
+    (utils/foppl-error "Lambdas are not part of FOPPL"))
 
   (visit-local-binding [v {bindings :bindings es :es}]
     (let [pairs (partition 2 bindings)

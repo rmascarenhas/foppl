@@ -110,7 +110,13 @@
   (visit-loop [_ _]
     (utils/ice "loop constructs should have been desugared during scoping"))
 
-  (visit-definition [v {name :name args :args e :e}]
+  (visit-procedure [v {name :name args :args e :e}]
+    (->> v
+         (nest-with args)
+         (accept e)
+         unscope))
+
+  (visit-lambda [v {name :name args :args e :e}]
     (->> v
          (nest-with args)
          (accept e)

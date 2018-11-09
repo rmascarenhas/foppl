@@ -8,7 +8,7 @@
             [foppl.eval :as eval]
             [foppl.formatter :as formatter]
             [foppl.utils :as utils])
-  (:import [foppl.ast constant variable literal-vector literal-map fn-application definition
+  (:import [foppl.ast constant variable literal-vector literal-map fn-application
             local-binding foreach loops if-cond sample observe program]))
 ;; represents a graph, where:
 ;;     - V is the set of vertices (random variables) of the graph
@@ -74,8 +74,11 @@
   (visit-variable [_ _]
     (utils/foppl-error "Not a distribution object: Score(Variable, v) = ⊥"))
 
-  (visit-definition [_ _]
+  (visit-procedure [_ _]
     (utils/foppl-error "Not a distribution object: Score(defn, v) = ⊥"))
+
+  (visit-lambda [_ _]
+    (utils/foppl-error "Not a distribution object: Score(fn, v) = ⊥"))
 
   (visit-local-binding [_ _]
     (utils/foppl-error "Not a distribution object: Score(let, v) = ⊥"))
@@ -169,7 +172,7 @@
   (visit-variable [v var]
     (model. (empty-graph) var))
 
-  (visit-definition [v {name :name args :args e :e}]
+  (visit-procedure [v {name :name args :args e :e}]
     (utils/ice "no function definition should be reachable from graphical model backend"))
 
   (visit-local-binding [v {bindings :bindings es :es}]

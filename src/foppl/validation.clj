@@ -44,7 +44,7 @@
   (visit-literal-map [_ literal-map]
     (defn-unexpected literal-map))
 
-  (visit-definition [_ {name :name args :args e :e}]
+  (visit-procedure [_ {name :name args :args e :e}]
     ;; Warns the user if a procedure has the same name as a FOPPL builtin
     (when (contains? eval/all-builtins name)
       (utils/warning (str "Overwriting built-in function " name)))
@@ -52,6 +52,9 @@
     ;; validates that a procedure's expression does not contain
     ;; nested procedure definitions
     (accept e (is-e-visitor.)))
+
+  (visit-lambda [_ _]
+    (utils/foppl-error "Lambdas are not part of FOPPL"))
 
   (visit-local-binding [_ local-binding]
     (defn-unexpected local-binding))
@@ -90,8 +93,11 @@
   (visit-literal-map [v {es :es}]
     (accept-coll es v))
 
-  (visit-definition [_ definition]
-    (e-unexpected definition))
+  (visit-procedure [_ procedure]
+    (e-unexpected procedure))
+
+  (visit-lambda [_ lambda]
+    (e-unexpected lambda))
 
   (visit-local-binding [v {bindings :bindings es :es}]
     (let [pairs (partition 2 bindings)

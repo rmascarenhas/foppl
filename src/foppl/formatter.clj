@@ -2,8 +2,7 @@
   "Formats the AST back into a textual representation."
   (:require [foppl.ast :as ast :refer [accept]]
             [foppl.utils :as utils]
-            [clojure.string :as s])
-  (:import [foppl.ast fn-application definition local-binding if-cond sample observe program]))
+            [clojure.string :as s]))
 
 ;; The formattter visitor traverses the AST and produces a textual representation of
 ;; the parsed code. Note that minimum effort was put into producing nicely formatted
@@ -38,10 +37,14 @@
   (visit-literal-map [v {es :es}]
     (str "{" (accept-coll es v) "}"))
 
-  (visit-definition [v {name :name args :args e :e}]
-    (if name
-      (str "(defn " name " [" (accept-coll args v) "] " (accept e v) ")")
-      (str "(fn [" (accept-coll args v) "] " (accept e v) ")")))
+  (visit-procedure [v {name :name args :args e :e}]
+    (str "(defn " name " [" (accept-coll args v) "] " (accept e v) ")"))
+
+  (visit-lambda [v {name :name args :args e :e}]
+    (let [formatted-args (str "[" (accept-coll args v) "]")
+          formatted-e (accept e v)
+          lam-name  (if name name " ")]
+      (str "(fn" lam-name formatted-args formatted-e ")")))
 
   (visit-local-binding [v {bindings :bindings es :es}]
     (str "(let [" (accept-coll bindings v) "] " (accept-coll es v) ")"))
