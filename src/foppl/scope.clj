@@ -5,7 +5,8 @@
   known function. Traverses the AST but never performs any mutation."
   (:require [foppl.ast :as ast :refer [accept]]
             [foppl.utils :as utils]
-            [foppl.eval :as eval]))
+            [foppl.eval :as eval])
+  (:import [foppl.ast variable]))
 
 ;; ================================================================ ;;
 ;;                          ENVIRONMENTS                            ;;
@@ -112,13 +113,13 @@
 
   (visit-procedure [v {name :name args :args e :e}]
     (->> v
-         (nest-with args)
+         (nest-with (conj args (ast/variable. name))) ;; allow recursion
          (accept e)
          unscope))
 
   (visit-lambda [v {name :name args :args e :e}]
     (->> v
-         (nest-with args)
+         (nest-with (conj args (ast/variable. name))) ;; allow recursion
          (accept e)
          unscope))
 

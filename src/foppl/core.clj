@@ -9,6 +9,7 @@
             [foppl.desugar :as desugar]
             [foppl.graphical :as graphical]
             [foppl.sampling :as sampling]
+            [foppl.hoppl :as hoppl]
             [foppl.operations :as operations])
   (:gen-class))
 
@@ -59,8 +60,7 @@
            validation/perform
            desugar/perform
            scope/perform
-           graphical/perform
-           operations/print-graph)
+           hoppl/perform)
       (catch clojure.lang.ExceptionInfo e
         (let [type (-> e ex-data :type)
               msg (-> (.getMessage e))]

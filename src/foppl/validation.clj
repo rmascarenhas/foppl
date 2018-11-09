@@ -96,8 +96,8 @@
   (visit-procedure [_ procedure]
     (e-unexpected procedure))
 
-  (visit-lambda [_ lambda]
-    (e-unexpected lambda))
+  (visit-lambda [v {e :e}]
+    (accept e v))
 
   (visit-local-binding [v {bindings :bindings es :es}]
     (let [pairs (partition 2 bindings)

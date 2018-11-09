@@ -3,7 +3,8 @@
   defined in this namespace to find out each desugaring step applied."
   (:require [foppl.ast :as ast :refer [accept]]
             [foppl.utils :as utils])
-  (:import [foppl.ast constant variable fn-application procedure local-binding foreach loops if-cond sample observe program]))
+  (:import [foppl.ast constant variable fn-application procedure lambda local-binding
+            foreach loops if-cond sample observe program]))
 
 ;; the data structure desugaring visitor translates every literal array ([e1, e2, ...]) to
 ;; a function application of 'vector'. In addition, it also transforms every literal map
@@ -34,8 +35,8 @@
   (visit-procedure [v {name :name args :args e :e}]
     (ast/procedure. name args (accept e v)))
 
-  (visit-lambda [_ _]
-    (utils/foppl-error "Lambdas are not a part of FOPPL"))
+  (visit-lambda [v {name :name args :args e :e}]
+    (ast/lambda. name args (accept e v)))
 
   (visit-local-binding [v {bindings :bindings es :es}]
     (let [pairs (partition 2 bindings)
@@ -93,8 +94,8 @@
   (visit-procedure [v {name :name args :args e :e}]
     (ast/procedure. name args (accept e v)))
 
-  (visit-lambda [_ _]
-    (utils/foppl-error "Lambdas are not part of FOPPL"))
+  (visit-lambda [v {name :name args :args e :e}]
+    (ast/lambda. name args (accept e v)))
 
   (visit-local-binding [v {bindings :bindings es :es}]
     {:pre [(even? (count bindings)) (> (count es) 0)]}
@@ -176,8 +177,8 @@
   (visit-procedure [v {name :name args :args e :e}]
     (ast/procedure. name args (accept e v)))
 
-  (visit-lambda [_ _]
-    (utils/foppl-error "Lambdas are not part of FOPPL"))
+  (visit-lambda [v {name :name args :args e :e}]
+    (ast/lambda. name args (accept e v)))
 
   (visit-local-binding [v {bindings :bindings es :es}]
     (let [pairs (partition 2 bindings)
@@ -244,8 +245,8 @@
   (visit-procedure [v {name :name args :args e :e}]
     (ast/procedure. name args (accept e v)))
 
-  (visit-lambda [_ _]
-    (utils/foppl-error "Lambdas are not part of FOPPL"))
+  (visit-lambda [v {name :name args :args e :e}]
+    (ast/lambda. name args (accept e v)))
 
   (visit-local-binding [v {bindings :bindings es :es}]
     (let [pairs (partition 2 bindings)
@@ -343,8 +344,8 @@
   (visit-procedure [v {name :name args :args e :e}]
     (ast/procedure. name (accept-coll args v) (accept e v)))
 
-  (visit-lambda [_ _]
-    (utils/foppl-error "Lambdas are not part of FOPPL"))
+  (visit-lambda [v {name :name args :args e :e}]
+    (ast/lambda. name (accept-coll args v) (accept e v)))
 
   (visit-local-binding [v {bindings :bindings es :es}]
     (let [pairs (partition 2 bindings)

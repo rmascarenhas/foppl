@@ -41,10 +41,7 @@
     (str "(defn " name " [" (accept-coll args v) "] " (accept e v) ")"))
 
   (visit-lambda [v {name :name args :args e :e}]
-    (let [formatted-args (str "[" (accept-coll args v) "]")
-          formatted-e (accept e v)
-          lam-name  (if name name " ")]
-      (str "(fn" lam-name formatted-args formatted-e ")")))
+    (str "(fn " name " [" (accept-coll args v) "] " (accept e v) ")"))
 
   (visit-local-binding [v {bindings :bindings es :es}]
     (str "(let [" (accept-coll bindings v) "] " (accept-coll es v) ")"))
