@@ -167,6 +167,50 @@
   (visit-observe [v {dist :dist val :val}]
     (ast/observe. (accept dist v) (accept val v))))
 
+(defrecord evaluation-based-inferece-visitor [rho store env sample-fn observe-fn])
+
+(extend-type evaluation-based-inference-visitor
+  ast/visitor
+
+  (visit-constant [{store :store} c]
+    [c, store])
+
+  (visit-variable [{store :store env :env} {name :name}]
+    [(get env name) store])
+
+  (visit-literal-vector [v {es :enns}]
+    (ast/literal-vector. (accept-coll es v)))
+
+  (visit-literal-map [v {es :es}]
+    (ast/literal-map. (accept-coll es v)))
+
+  (visit-procedure [v {name :name args :args e :e}]
+    (ast/procedure. name args (accept e v)))
+
+  (visit-lambda [v {name :name args :args e :e}]
+    (ast/lambda. name args (accept e v)))
+
+  (visit-local-binding [v {bindings :bindings es :es}]
+    )
+
+  (visit-foreach [v {c :c bindings :bindings es :es}]
+    (utils/foppl-error "foreach expressions are not valid in HOPPL"))
+
+  (visit-loop [v {c :c e :e f :f es :es}]
+    (utils/foppl-error "loop expressions should have been desugared"))
+
+  (visit-if-cond [v {predicate :predicate then :then else :else}]
+    (ast/if-cond. (accept predicate v) (accept then v) (accept else v)))
+
+  (visit-fn-application [v {name :name args :args}]
+    (ast/fn-application. name (accept-coll args v)))
+
+  (visit-sample [v {dist :dist}]
+    (ast/sample. (accept dist v)))
+
+  (visit-observe [v {dist :dist val :val}]
+    (ast/observe. (accept dist v) (accept val v))))
+
 (defn- desugar-loops [{defs :defs e :e}]
   "Desugars `loop` constructs in HOPPl (which work differently from
   their FOPPL counterparts)."
