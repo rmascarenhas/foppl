@@ -12,8 +12,8 @@
 (defrecord data-structure-desugar-visitor [])
 
 (defn- accept-coll [coll v]
-  "Desugars every element in a collection, returning a mapped collection
-  of desugared nodes"
+  "Desugars every element in a collection, returning a mapped
+  collection of desugared nodes"
   (let [desugar (fn [n] (accept n v))]
     (doall (map desugar coll))))
 
@@ -376,6 +376,13 @@
   (let [desugar (fn [n] (accept n v))]
     (ast/program. (map desugar defs) (desugar e))))
 
+(defn multiple-bindings [{defs :defs e :e}]
+  "Performs desguaring of `let` expressions with multiple bindings to
+  multiple `let` forms with a single bound variable each."
+
+  (let [v (let-form-desugar-visitor.)
+        desugar (fn [n] (accept n v))]
+    (ast/program. (map desugar defs) (desugar e))))
 
 (defn perform [program]
   "Performs desugaring of a program. Returns a ast/program record containing

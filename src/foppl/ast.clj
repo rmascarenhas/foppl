@@ -161,8 +161,8 @@
     (foreach. (to-tree c) (map to-tree bindings) (map to-tree es))))
 
 (defn- handle-loop [context]
-  {:pre [(>= (count context) 4) ;; context: constant c, initial expression e, function f, and arguments
-         (number? (first context)) ;; number of iterations needs to be a constant
+  {:pre [(>= (count context) 4)      ;; context: constant c, initial expression e, function f, and arguments
+         (number? (first context))   ;; number of iterations needs to be a constant (TODO: this is not the case for HOPPL)
          (symbol? (nth context 2))]} ;; function name needs to be a symbol
   "Sugared language construct to allow cumulative computations"
 

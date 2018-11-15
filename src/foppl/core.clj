@@ -10,7 +10,7 @@
             [foppl.graphical :as graphical]
             [foppl.sampling :as sampling]
             [foppl.hoppl :as hoppl]
-            [foppl.operations :as operations])
+            [foppl.formatter :as formatter])
   (:gen-class))
 
 (def ^:private me "foppl")
@@ -58,9 +58,10 @@
       (->> stream
            ast/read-source
            validation/perform
-           desugar/perform
-           scope/perform
-           hoppl/perform)
+           hoppl/perform
+           :e
+           formatter/to-str
+           println)
       (catch clojure.lang.ExceptionInfo e
         (let [type (-> e ex-data :type)
               msg (-> (.getMessage e))]
