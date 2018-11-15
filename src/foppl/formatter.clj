@@ -41,7 +41,8 @@
     (str "(defn " name " [" (accept-coll args v) "] " (accept e v) ")"))
 
   (visit-lambda [v {name :name args :args e :e}]
-    (str "(fn " name " [" (accept-coll args v) "] " (accept e v) ")"))
+    (let [fn-position (if name (str " " name) name)]
+      (str "(fn" fn-position " [" (accept-coll args v) "] " (accept e v) ")")))
 
   (visit-local-binding [v {bindings :bindings es :es}]
     (str "(let [" (accept-coll bindings v) "] " (accept-coll es v) ")"))
@@ -58,7 +59,8 @@
       (str "(if " (accept predicate v) " " (accept then v) then-else-sep (accept else v) ")")))
 
   (visit-fn-application [v {name :name args :args}]
-    (str "(" name (if (empty? args) "" " ") (accept-coll args v) ")"))
+    (let [fn-position (if (symbol? name) name (accept name v))]
+      (str "(" fn-position (if (empty? args) "" " ") (accept-coll args v) ")")))
 
   (visit-sample [v {dist :dist}]
     (str "(sample " (accept dist v) ")"))

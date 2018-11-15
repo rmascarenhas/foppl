@@ -92,6 +92,81 @@
   (visit-observe [v {dist :dist val :val}]
     (ast/observe. (accept dist v) (accept val v))))
 
+;; let-desugar-visitor performs desugaring of `let` expressions in the
+;; HOPPL context.  `let` forms are removed altogether in HOPPL since
+;; we can replace them with applications of anonymous functions:
+;;
+;;     (let [x v] (+ x 1))
+;;
+;; gets desugared to:
+;;
+;;     ((fn [x] (+ x 1)) v)
+(defrecord let-desugar-visitor [])
+
+(extend-type let-desugar-visitor
+  ast/visitor
+
+  (visit-constant [_ c]
+    c)
+
+  (visit-variable [_ var]
+    var)
+
+  (visit-literal-vector [v {es :enns}]
+    (ast/literal-vector. (accept-coll es v)))
+
+  (visit-literal-map [v {es :es}]
+    (ast/literal-map. (accept-coll es v)))
+
+  (visit-procedure [v {name :name args :args e :e}]
+    (ast/procedure. name args (accept e v)))
+
+  (visit-lambda [v {name :name args :args e :e}]
+    (ast/lambda. name args (accept e v)))
+
+  (visit-local-binding [v {bindings :bindings es :es}]
+    {:pre [(= (count bindings) 2) (= (count es) 1)]}
+
+    (let [;; the name being bound
+          name (first bindings)
+
+          ;; the value being bound
+          val (accept (second bindings) v)
+
+          ;; the expression in which `name` is bound to `val`
+          e (accept (first es) v)
+
+          ;; the function we want to apply
+          lam (ast/lambda. nil [name] e)]
+
+
+      ;; TODO: we are abusing of the `fn-application` AST node
+      ;; here. It was originally intended to be used in the FOPPL
+      ;; context where element in function position would always be a
+      ;; symbol.  In HOPPL-land, it can be any expression. Ideally,
+      ;; the `fn-application` node should be generalized to accept
+      ;; arbitrary expressions in function position, but that requires
+      ;; significant changes in the existing FOPPL source code.
+      (ast/fn-application. lam [val])))
+
+  (visit-foreach [v {c :c bindings :bindings es :es}]
+    (utils/foppl-error "foreach expressions are not valid in HOPPL"))
+
+  (visit-loop [v {c :c e :e f :f es :es}]
+    (utils/foppl-error "loop expressions should have been desugared"))
+
+  (visit-if-cond [v {predicate :predicate then :then else :else}]
+    (ast/if-cond. (accept predicate v) (accept then v) (accept else v)))
+
+  (visit-fn-application [v {name :name args :args}]
+    (ast/fn-application. name (accept-coll args v)))
+
+  (visit-sample [v {dist :dist}]
+    (ast/sample. (accept dist v)))
+
+  (visit-observe [v {dist :dist val :val}]
+    (ast/observe. (accept dist v) (accept val v))))
+
 (defn- desugar-loops [{defs :defs e :e}]
   "Desugars `loop` constructs in HOPPl (which work differently from
   their FOPPL counterparts)."
@@ -102,7 +177,9 @@
 (defn- desugar-let [{defs :defs e :e :as program}]
   "`let` expressions are just sugar in HOPPL: they get translated to
   anonymous function applications."
-  program)
+  (let [v (let-desugar-visitor.)
+        desugar (fn [n] (accept n v))]
+    (ast/program. (map desugar defs) (accept e v))))
 
 (defn- desugar [program]
   "Desugars a HOOPL program entirely: loops are desugared into `let`
@@ -121,7 +198,7 @@
 (defn perform [program]
   "Performs evaluation-based inference of a HOPPL program. First, the
   program is desugared, then it is interpreted. Inference uses
-  importance sampling."
+  likelihood weighting."
   (-> program
       desugar
       interpret))
