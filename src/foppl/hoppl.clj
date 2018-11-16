@@ -4,6 +4,7 @@
   the use of anonymous functions and recursion."
   (:require [foppl.ast :as ast :refer [accept]]
             [foppl.desugar :as desugar]
+            [foppl.eval :as eval]
             [foppl.utils :as utils])
   (:import [foppl.ast constant variable if-cond fn-application literal-vector
             literal-map procedure lambda local-binding sample observe program]))
@@ -27,7 +28,7 @@
   (visit-variable [_ var]
     var)
 
-  (visit-literal-vector [v {es :enns}]
+  (visit-literal-vector [v {es :es}]
     (ast/literal-vector. (accept-coll es v)))
 
   (visit-literal-map [v {es :es}]
@@ -112,7 +113,7 @@
   (visit-variable [_ var]
     var)
 
-  (visit-literal-vector [v {es :enns}]
+  (visit-literal-vector [v {es :es}]
     (ast/literal-vector. (accept-coll es v)))
 
   (visit-literal-map [v {es :es}]
@@ -167,31 +168,40 @@
   (visit-observe [v {dist :dist val :val}]
     (ast/observe. (accept dist v) (accept val v))))
 
-(defrecord evaluation-based-inferece-visitor [rho store env sample-fn observe-fn])
+(declare to-clojure-value)
 
-(extend-type evaluation-based-inference-visitor
+(defrecord clojure-value-visitor [env])
+
+(extend-type clojure-value-visitor
   ast/visitor
 
-  (visit-constant [{store :store} c]
-    [c, store])
+  (visit-constant [_ {n :n}]
+    n)
 
-  (visit-variable [{store :store env :env} {name :name}]
-    [(get env name) store])
+  (visit-variable [{env :env} {name :name}]
+    (get env name))
 
-  (visit-literal-vector [v {es :enns}]
-    (ast/literal-vector. (accept-coll es v)))
+  (visit-literal-vector [v {es :es}]
+    (into [] (accept-coll es v)))
 
   (visit-literal-map [v {es :es}]
-    (ast/literal-map. (accept-coll es v)))
+    (let [elements (accept-coll es v)
+          to-vec (fn [coll] (into [] coll))
+          partitions (map to-vec (partition 2 elements))
+          map-elements (to-vec partitions)]
+      (into {} map-elements)))
 
   (visit-procedure [v {name :name args :args e :e}]
-    (ast/procedure. name args (accept e v)))
+    (utils/foppl-error "Procedure definitions should not exist when computing Clojure value"))
 
-  (visit-lambda [v {name :name args :args e :e}]
-    (ast/lambda. name args (accept e v)))
+  (visit-lambda [{env :env :as v} {name :name args :args e :e}]
+    (fn [& params]
+      (let [args-names (map :name args)
+            env-extension (zipmap args-names params)]
+        (to-clojure-value e (merge env env-extension)))))
 
   (visit-local-binding [v {bindings :bindings es :es}]
-    )
+    (utils/foppl-error "Local bindings should have been removed when computing Clojure value"))
 
   (visit-foreach [v {c :c bindings :bindings es :es}]
     (utils/foppl-error "foreach expressions are not valid in HOPPL"))
@@ -200,19 +210,130 @@
     (utils/foppl-error "loop expressions should have been desugared"))
 
   (visit-if-cond [v {predicate :predicate then :then else :else}]
-    (ast/if-cond. (accept predicate v) (accept then v) (accept else v)))
+    (utils/foppl-error "If conditions should have beem removed when computing Clojure value"))
 
   (visit-fn-application [v {name :name args :args}]
-    (ast/fn-application. name (accept-coll args v)))
+    (utils/foppl-error "Function application is not a value"))
 
   (visit-sample [v {dist :dist}]
-    (ast/sample. (accept dist v)))
+    (utils/foppl-error "Sample is not a value"))
 
   (visit-observe [v {dist :dist val :val}]
-    (ast/observe. (accept dist v) (accept val v))))
+    (utils/foppl-error "Observe is not a value")))
+
+(defn- builtin? [name]
+  (contains? eval/all-builtins name))
+
+(defn- builtin-callable [name]
+  (get eval/all-builtins name))
+
+(defn- to-clojure-value
+  ([n] (to-clojure-value n {}))
+
+  ([n env] (let [v (clojure-value-visitor. {})]
+             (accept n v))))
+
+;; evaluation-based-inference-visitor performs evaluation-based
+;; inference regardless of the inference algorithm. The parameters it
+;; receives are:
+;;
+;; * `rho`: a map from user-defined procedure name to a tuple
+;;   containing the list of variable names and the expression associated
+;;   with the procedure.
+;;
+;; * `store`: a store for state to be kept during the inference
+;;   procedure. Specific to the inference algorithm used.
+;;
+;; * `env`: the execution environment. Stores local variables and
+;;   their values at the current point of execution.
+;;
+;; * `sample-fn`: a function to be called when a `sample` expression
+;;   is found. It is called with two arguments: the distribution to be
+;;   sampled from and the inference `store`. It must return a vector
+;;   where the first element is the resulting AST node, and the second
+;;   is a (potentially modified) inference store.
+;;
+;; * `observe-fn`: similar to `sample-fn` for the `observe`
+;;   expression. It is called with three arguments: the distribution
+;;   on which the observation occurs, and value observed, and the
+;;   inference `store`. It must return a value in the same format as
+;;   `sample-fn`.
+(defrecord evaluation-based-inference-visitor [rho store env sample-fn observe-fn])
+
+(defn- with-store [new-store {rho :rho env :env sample-fn :sample-fn observe-fn :observe-fn}]
+  (evaluation-based-inference-visitor. rho new-store env sample-fn observe-fn))
+
+(defn- with-env [new-vars {rho :rho store :store env :env sample-fn :sample-fn observe-fn :observe-fn}]
+  (evaluation-based-inference-visitor. rho store (merge env new-vars) sample-fn observe-fn))
+
+(defn- eval-coll [es {store :store :as v}]
+  (let [visit-expression (fn [[es-coll current-store] e]
+                           (let [[reduced-e new-store] (accept e (with-store current-store v))]
+                             [(into es-coll reduced-e) new-store]))]
+    (reduce visit-expression [[] store] es)))
+
+(extend-type evaluation-based-inference-visitor
+  ast/visitor
+
+  (visit-constant [{store :store} c]
+    [c store])
+
+  (visit-variable [{store :store env :env} {name :name}]
+    (when-not (contains? env name)
+      (utils/foppl-error (str "Error: Undefined variable: " name)))
+
+    [(get env name) store])
+
+  (visit-literal-vector [{store :store :as v} {es :es}]
+    (let [[es new-store] (eval-coll es v)]
+      [(ast/literal-vector. es) new-store]))
+
+  (visit-literal-map [{store :store :as v} {es :es}]
+    (let [[es new-store] (eval-coll es v)]
+      [(ast/literal-map. es) new-store]))
+
+  (visit-procedure [v {name :name args :args e :e}]
+    (utils/foppl-error "Procedure definitions should not exist during evaluation-based inference"))
+
+  (visit-lambda [{store :store} lambda]
+    [lambda store])
+
+  (visit-local-binding [v {bindings :bindings es :es}]
+    (utils/foppl-error "Local bindings should have been desguared during evaluation-based inference"))
+
+  (visit-foreach [v {c :c bindings :bindings es :es}]
+    (utils/foppl-error "foreach expressions are not valid in HOPPL"))
+
+  (visit-loop [v {c :c e :e f :f es :es}]
+    (utils/foppl-error "loop expressions should have been desugared during evaluation-based inference"))
+
+  (visit-if-cond [v {predicate :predicate then :then else :else}]
+    (let [[reduced-predicate new-store] (accept predicate v)
+          interpreter (with-store new-store v)]
+      (if reduced-predicate
+        (accept then interpreter)
+        (accept else interpreter))))
+
+  (visit-fn-application [{rho :rho store :store :as v} {car :name args :args}]
+    (let [[reduced-args new-store] (eval-coll args v)]
+      (cond
+        (contains? rho car) (let [[vars e] (get rho car)
+                                  env-extension (zipmap vars reduced-args)]
+                              (accept e (with-env env-extension v)))
+        (builtin? car) [(apply (builtin-callable car) (map to-clojure-value reduced-args)) store]
+        :else [(apply (to-clojure-value car) (map to-clojure-value reduced-args)) store])))
+
+  (visit-sample [{store :store sample-fn :sample-fn :as v} {dist :dist}]
+    (let [reduced-dist (accept dist v)]
+      (sample-fn reduced-dist store)))
+
+  (visit-observe [{store :store observe-fn :observe-fn :as v} {dist :dist val :val}]
+    (let [reduced-dist (accept dist v)
+          reduced-val (accept val v)]
+      (observe-fn reduced-dist reduced-val store))))
 
 (defn- desugar-loops [{defs :defs e :e}]
-  "Desugars `loop` constructs in HOPPl (which work differently from
+  "Desugars `loop` constructs in HOPPL (which work differently from
   their FOPPL counterparts)."
   (let [v (loop-desugar-visitor.)
         desugar (fn [n] (accept n v))]

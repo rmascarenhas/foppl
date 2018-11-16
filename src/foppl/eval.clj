@@ -43,7 +43,6 @@
 
     (valid? f)))
 
-
 ;; this simple visitor extracts the underlying constant from AST nodes
 ;; of type 'constant'. Useful when performing partial evaluation, where
 ;; the actual value of a node needs to be retrieved.
