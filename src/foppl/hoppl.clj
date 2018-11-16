@@ -270,7 +270,7 @@
 (defn- eval-coll [es {store :store :as v}]
   (let [visit-expression (fn [[es-coll current-store] e]
                            (let [[reduced-e new-store] (accept e (with-store current-store v))]
-                             [(into es-coll reduced-e) new-store]))]
+                             [(conj es-coll reduced-e) new-store]))]
     (reduce visit-expression [[] store] es)))
 
 (extend-type evaluation-based-inference-visitor
@@ -296,8 +296,8 @@
   (visit-procedure [v {name :name args :args e :e}]
     (utils/foppl-error "Procedure definitions should not exist during evaluation-based inference"))
 
-  (visit-lambda [{store :store} lambda]
-    [lambda store])
+  (visit-lambda [{store :store :as v} {name :name args :args e :e}]
+    [(ast/lambda. name args (accept e v)) store])
 
   (visit-local-binding [v {bindings :bindings es :es}]
     (utils/foppl-error "Local bindings should have been desguared during evaluation-based inference"))
@@ -315,16 +315,24 @@
         (accept then interpreter)
         (accept else interpreter))))
 
-  (visit-fn-application [{rho :rho store :store :as v} {car :name args :args}]
+  (visit-fn-application [{rho :rho env :env store :store :as v} {car :name args :args}]
     (let [[reduced-args new-store] (eval-coll args v)
-          constant (fn [val] (ast/constant. val))]
+          constant #(ast/constant. %)
+          handle-lambda (fn [{params :params e :e :as lambda}]
+                          (let [args-names (map :name params)
+                                args-values (map to-clojure-value reduced-args)
+                                env-extension (zipmap args-names args-values)
+                                new-env (merge env env-extension)
+                                visitor (with-env new-env v)
+                                callable (to-clojure-value (accept lambda visitor) new-env)]
+                            (apply callable args-values)))]
 
       (cond
         (contains? rho car) (let [[vars e] (get rho car)
                                   env-extension (zipmap vars reduced-args)]
                               (accept e (with-env env-extension v)))
         (builtin? car) [(constant (apply (builtin-callable car) (map to-clojure-value reduced-args))) store]
-        :else [(constant (apply (to-clojure-value car) (map to-clojure-value reduced-args))) store])))
+        :else [(constant (handle-lambda car)) store])))
 
   (visit-sample [{store :store sample-fn :sample-fn :as v} {dist :dist}]
     (let [[reduced-dist new-store] (accept dist v)]
