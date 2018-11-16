@@ -286,6 +286,13 @@
         valid-fns (map symbol (filter valid-fn? (map str fns)))]
     (set valid-fns)))
 
+(defn builtin-fn [name]
+  "Returns the Var associated with the given name. If the name is not
+  valid (i.e., not accessible to FOPPL/HOPPL programs, then this
+  function will return `nil`."
+  (when (valid-fn? (str name))
+    (get builtins-registry name)))
+
 (defn peval [e]
   "Performs partial evaluation of an expression (AST node 'e'). Returns
   another AST node representing the result of the evaluated expression. Note

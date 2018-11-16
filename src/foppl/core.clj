@@ -59,8 +59,7 @@
            ast/read-source
            validation/perform
            hoppl/perform
-           :e
-           formatter/to-str
+           (take 10)
            println)
       (catch clojure.lang.ExceptionInfo e
         (let [type (-> e ex-data :type)

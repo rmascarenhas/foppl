@@ -211,7 +211,7 @@
     (utils/foppl-error "loop expressions should have been desugared"))
 
   (visit-if-cond [v {predicate :predicate then :then else :else}]
-    (utils/foppl-error "If conditions should have beem removed when computing Clojure value"))
+    (utils/foppl-error "If conditions should have been removed when computing Clojure value"))
 
   (visit-fn-application [v {name :name args :args}]
     (utils/foppl-error "Function application is not a value"))
@@ -224,9 +224,6 @@
 
 (defn- builtin? [name]
   (contains? eval/all-builtins name))
-
-(defn- builtin-callable [name]
-  (get eval/all-builtins name))
 
 (defn- to-clojure-value
   ([n] (to-clojure-value n {}))
@@ -267,6 +264,9 @@
 (defn- with-env [new-vars {rho :rho store :store env :env sample-fn :sample-fn observe-fn :observe-fn}]
   (evaluation-based-inference-visitor. rho store (merge env new-vars) sample-fn observe-fn))
 
+(defn- with-rho [new-procedures {rho :rho store :store env :env sample-fn :sample-fn observe-fn :observe-fn}]
+  (evaluation-based-inference-visitor. (merge rho new-procedures) store env sample-fn observe-fn))
+
 (defn- eval-coll [es {store :store :as v}]
   (let [visit-expression (fn [[es-coll current-store] e]
                            (let [[reduced-e new-store] (accept e (with-store current-store v))]
@@ -296,11 +296,18 @@
   (visit-procedure [v {name :name args :args e :e}]
     (utils/foppl-error "Procedure definitions should not exist during evaluation-based inference"))
 
-  (visit-lambda [{store :store :as v} {name :name args :args e :e}]
-    [(ast/lambda. name args (accept e v)) store])
+  (visit-lambda [{store :store} lambda]
+    [lambda store])
 
   (visit-local-binding [v {bindings :bindings es :es}]
-    (utils/foppl-error "Local bindings should have been desguared during evaluation-based inference"))
+    {:pre [(= (count bindings) 2) (= (count es) 1)]}
+
+    (let [bound-name (:name (first bindings))
+          bound-val (second bindings)
+          [c1 new-store] (accept bound-val v)
+          env-extension {bound-name c1}
+          e (first es)]
+      (accept e (with-env env-extension v))))
 
   (visit-foreach [v {c :c bindings :bindings es :es}]
     (utils/foppl-error "foreach expressions are not valid in HOPPL"))
@@ -311,28 +318,31 @@
   (visit-if-cond [v {predicate :predicate then :then else :else}]
     (let [[reduced-predicate new-store] (accept predicate v)
           interpreter (with-store new-store v)]
-      (if reduced-predicate
+      (if (to-clojure-value reduced-predicate)
         (accept then interpreter)
         (accept else interpreter))))
 
-  (visit-fn-application [{rho :rho env :env store :store :as v} {car :name args :args}]
+  (visit-fn-application [{rho :rho env :env store :store :as v} {name :name args :args}]
     (let [[reduced-args new-store] (eval-coll args v)
-          constant #(ast/constant. %)
-          handle-lambda (fn [{params :params e :e :as lambda}]
-                          (let [args-names (map :name params)
-                                args-values (map to-clojure-value reduced-args)
-                                env-extension (zipmap args-names args-values)
-                                new-env (merge env env-extension)
-                                visitor (with-env new-env v)
-                                callable (to-clojure-value (accept lambda visitor) new-env)]
-                            (apply callable args-values)))]
+          clojure-args (map to-clojure-value reduced-args)]
 
       (cond
-        (contains? rho car) (let [[vars e] (get rho car)
-                                  env-extension (zipmap vars reduced-args)]
-                              (accept e (with-env env-extension v)))
-        (builtin? car) [(constant (apply (builtin-callable car) (map to-clojure-value reduced-args))) store]
-        :else [(constant (handle-lambda car)) store])))
+        (contains? rho name) (let [[param-names e] (get rho name)
+                                   env-extension (zipmap param-names clojure-args)
+                                   visitor (->> v
+                                                (with-store new-store)
+                                                (with-env env-extension))]
+
+                               (accept e visitor))
+
+        (builtin? name) [(ast/constant. (apply (eval/builtin-fn name) clojure-args)) store]
+
+        (contains? env name) (let [{name :name params :args e :e} (get env name)
+                                   params-names (map :name params)
+                                   env-extension (zipmap params-names reduced-args)]
+                               (accept e (with-env env-extension v)))
+
+        :else (utils/foppl-error (str "Undefined function: " name)))))
 
   (visit-sample [{store :store sample-fn :sample-fn :as v} {dist :dist}]
     (let [[reduced-dist new-store] (accept dist v)]
@@ -365,8 +375,7 @@
   functions."
   (-> program
       desugar-loops
-      desugar/multiple-bindings
-      desugar-let))
+      desugar/multiple-bindings))
 
 (defn- interpret [sample-fn observe-fn store {defs :defs e :e}]
   (let [procedure-names (map :name defs)
@@ -382,7 +391,7 @@
   {:log-W 0})
 
 (defn- likelihood-sample-fn [{dist :n} store]
-  [(anglican/sample* dist) store])
+  [(ast/constant. (anglican/sample* dist)) store])
 
 (defn- likelihood-observe-fn [{dist :n} {val :n :as observed} store]
   (let [log-prob (anglican/observe* dist val)
