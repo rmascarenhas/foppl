@@ -5,7 +5,8 @@
   (:require [foppl.ast :as ast :refer [accept]]
             [foppl.desugar :as desugar]
             [foppl.eval :as eval]
-            [foppl.utils :as utils])
+            [foppl.utils :as utils]
+            [anglican.runtime :as anglican])
   (:import [foppl.ast constant variable if-cond fn-application literal-vector
             literal-map procedure lambda local-binding sample observe program]))
 
@@ -315,22 +316,24 @@
         (accept else interpreter))))
 
   (visit-fn-application [{rho :rho store :store :as v} {car :name args :args}]
-    (let [[reduced-args new-store] (eval-coll args v)]
+    (let [[reduced-args new-store] (eval-coll args v)
+          constant (fn [val] (ast/constant. val))]
+
       (cond
         (contains? rho car) (let [[vars e] (get rho car)
                                   env-extension (zipmap vars reduced-args)]
                               (accept e (with-env env-extension v)))
-        (builtin? car) [(apply (builtin-callable car) (map to-clojure-value reduced-args)) store]
-        :else [(apply (to-clojure-value car) (map to-clojure-value reduced-args)) store])))
+        (builtin? car) [(constant (apply (builtin-callable car) (map to-clojure-value reduced-args))) store]
+        :else [(constant (apply (to-clojure-value car) (map to-clojure-value reduced-args))) store])))
 
   (visit-sample [{store :store sample-fn :sample-fn :as v} {dist :dist}]
-    (let [reduced-dist (accept dist v)]
-      (sample-fn reduced-dist store)))
+    (let [[reduced-dist new-store] (accept dist v)]
+      (sample-fn reduced-dist new-store)))
 
   (visit-observe [{store :store observe-fn :observe-fn :as v} {dist :dist val :val}]
-    (let [reduced-dist (accept dist v)
-          reduced-val (accept val v)]
-      (observe-fn reduced-dist reduced-val store))))
+    (let [[reduced-dist store-1] (accept dist v)
+          [reduced-val store-2] (accept val (with-store store-1 v))]
+      (observe-fn reduced-dist reduced-val store-2))))
 
 (defn- desugar-loops [{defs :defs e :e}]
   "Desugars `loop` constructs in HOPPL (which work differently from
@@ -357,8 +360,35 @@
       desugar/multiple-bindings
       desugar-let))
 
-(defn- interpret [program]
-  program)
+(defn- interpret [sample-fn observe-fn store {defs :defs e :e}]
+  (let [procedure-names (map :name defs)
+        procedure-args (fn [{args :args}] (map :name args))
+        encode-procedure (fn [procedure] [(into [] (procedure-args procedure)) (:e procedure)])
+        encoded (map encode-procedure defs)
+        rho (zipmap procedure-names encoded)
+
+        v (evaluation-based-inference-visitor. rho store {} sample-fn observe-fn)]
+    (accept e v)))
+
+(defn- likelihood-init-store []
+  {:log-W 0})
+
+(defn- likelihood-sample-fn [{dist :n} store]
+  [(anglican/sample* dist) store])
+
+(defn- likelihood-observe-fn [{dist :n} {val :n :as observed} store]
+  (let [log-prob (anglican/observe* dist val)
+        current-weight (:log-W store)
+        new-store (assoc store :log-W (+ log-prob current-weight))]
+    [observed new-store]))
+
+(defn- likelihood-weighting-inference
+  ([program] (let [gen-fn (partial interpret likelihood-sample-fn likelihood-observe-fn)]
+               (likelihood-weighting-inference program (likelihood-init-store) gen-fn)))
+
+  ([program store gen-fn] (let [[val new-store] (gen-fn store program)
+                                weight (:log-W new-store)]
+                            (lazy-seq (cons [val weight] (likelihood-weighting-inference program new-store gen-fn))))))
 
 (defn perform [program]
   "Performs evaluation-based inference of a HOPPL program. First, the
@@ -366,4 +396,4 @@
   likelihood weighting."
   (-> program
       desugar
-      interpret))
+      likelihood-weighting-inference))
