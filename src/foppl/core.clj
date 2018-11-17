@@ -59,8 +59,10 @@
            ast/read-source
            validation/perform
            hoppl/perform
-           (take 10)
-           println)
+           (drop 1000)
+           (take 10000)
+           (hoppl/empirical-mean)
+           (println "Mean:"))
       (catch clojure.lang.ExceptionInfo e
         (let [type (-> e ex-data :type)
               msg (-> (.getMessage e))]

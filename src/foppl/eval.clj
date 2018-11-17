@@ -20,9 +20,8 @@
 
 ;; do not allow the evaluation of these functions in a FOPPL context
 (def ^:private forbidden-core-functions
-  '#{binding eval loop map reduce filter keep keep-indexed
-     remove repeatedly every? not-any? some every-pred some-fn
-     comp juxt partial})
+  '#{binding eval loop filter keep map reduce repeatedly keep-indexed
+     remove every? not-any? some every-pred some-fn comp juxt partial})
 
 (defn- valid-fn? [f]
   {:pre [(string? f)]}

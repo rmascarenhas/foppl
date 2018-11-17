@@ -4,7 +4,7 @@
   (:require [foppl.ast :as ast :refer [accept]]
             [foppl.utils :as utils])
   (:import [foppl.ast constant variable fn-application procedure lambda local-binding
-            foreach loops if-cond sample observe program]))
+            foreach loops if-cond sample literal-vector literal-map observe program]))
 
 ;; the data structure desugaring visitor translates every literal array ([e1, e2, ...]) to
 ;; a function application of 'vector'. In addition, it also transforms every literal map
@@ -82,11 +82,11 @@
   (visit-variable [_ var]
     var)
 
-  (visit-literal-vector [_ literal-vector]
-    (utils/ice "Literal vectors should not exist when desugaring 'let' forms"))
+  (visit-literal-vector [v {es :es}]
+    (ast/literal-vector. (accept-coll es v)))
 
-  (visit-literal-map [_ literal-map]
-    (utils/ice "Literal maps should not exist when desugaring 'let' forms"))
+  (visit-literal-map [v {es :es}]
+    (ast/literal-map. (accept-coll es v)))
 
   (visit-foreach [_ foreach]
     (utils/ice "foreach should have been desugared before processing 'let' forms"))
