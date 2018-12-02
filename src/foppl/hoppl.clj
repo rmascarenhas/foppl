@@ -405,13 +405,15 @@
         new-store (assoc store :log-W (+ log-prob current-weight))]
     [observed new-store]))
 
-(defn- likelihood-weighting-inference
-  "Performs likelihood-weighting based inference."
+(defn- perform-inference
+  "Performs evaluation-based inference. Inference algorithm is dicated
+  by the `init-store`, `sample-fn` and `obseve-fn` parameters passed."
 
   ;; given a program, derive a generator function to be used in the
   ;; construction of a lazy sequence of samples.
-  ([program] (let [gen-fn (partial interpret likelihood-sample-fn likelihood-observe-fn)]
-               (likelihood-weighting-inference program (likelihood-init-store) gen-fn)))
+  ([program init-store sample-fn observe-fn]
+   (let [gen-fn (partial interpret sample-fn observe-fn)]
+     (perform-inference program (init-store) gen-fn)))
 
   ;; builds a lazy sequence of weighted samples by running the
   ;; model. Each element in the lazy sequence is in the format `[value
@@ -427,16 +429,20 @@
                                                         result))
                                 [val new-store] (retry-on-exception)
                                 weight (:log-W new-store)]
-                            (lazy-seq (cons [val weight] (likelihood-weighting-inference program store gen-fn))))))
+                            (lazy-seq (cons [val weight] (perform-inference program store gen-fn))))))
 
-(defn perform [program]
+(defn perform
   "Performs evaluation-based inference of a HOPPL program. First, the
-  program is desugared, then it is interpreted. Inference uses
-  likelihood weighting."
-  (-> program
-      desugar
-      ho-builtins
-      likelihood-weighting-inference))
+  program is desugared, then it is interpreted. If only the program is
+  passed, likelihood-weighting inference is performed."
+
+  ([program] (perform program likelihood-init-store likelihood-sample-fn likelihood-observe-fn))
+
+  ([program init-store sample-fn observe-fn]
+   (-> program
+       desugar
+       ho-builtins
+       (perform-inference init-store sample-fn observe-fn))))
 
 (defn empirical-mean [samples]
   "Calculates the empirical mean given a collection of samples (in the
