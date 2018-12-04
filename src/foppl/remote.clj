@@ -22,8 +22,8 @@
       (zmq/bind (str "tcp://*:" tcp-port)))))
 
 (defn- handshake [socket]
-  (let [bytes (zmq/receive socket)
-        buffer (. ByteBuffer wrap bytes)
+  (let [blob (zmq/receive socket)
+        buffer (. ByteBuffer wrap blob)
         message (. Message getRootAsMessage buffer)
         type (.bodyType message)]
 
@@ -33,12 +33,18 @@
     (let [handshake (.body message (Handshake.))
           system-name (.systemName handshake)
           fbb (FlatBufferBuilder. 64)
-          lang-offset (.createString fbb lang-name)
-          model-offset (.createString fbb model-name)]
+          _ (doto (new Message)
+              (.startMessage fbb)
+              (.addBodyType fbb MessageBody/HandshakeResult)
+              (.addBody
+               fbb
+               (. HandshakeResult createHandshakeResult fbb (.createString fbb lang-name) (.createString fbb model-name))))
 
-      (. HandshakeResult createHandshakeResult fbb lang-offset model-offset)
-      (.finish fbb)
-      (zmq/send socket (.dataBuffer fbb))
+          _ (.finish fbb offset)
+          data (byte-array offset)]
+
+      (.get (.dataBuffer fbb) data)
+      (zmq/send socket (bytes data))
       system-name)))
 
 (defn- init-store []
@@ -68,6 +74,6 @@
        (logger "Waiting for handshake from inference engine.")
 
        (loop []
-         (logger "Got handshake from " (handshake socket))
+         (logger "Got handshake from" (handshake socket))
          (recur))))))
 
