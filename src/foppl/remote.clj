@@ -33,18 +33,17 @@
     (let [handshake (.body message (Handshake.))
           system-name (.systemName handshake)
           fbb (FlatBufferBuilder. 64)
-          _ (doto (new Message)
-              (.startMessage fbb)
-              (.addBodyType fbb MessageBody/HandshakeResult)
-              (.addBody
-               fbb
-               (. HandshakeResult createHandshakeResult fbb (.createString fbb lang-name) (.createString fbb model-name))))
+          lang-offset (.createString fbb lang-name)
+          model-offset (.createString fbb model-name)
+          result-offset (. HandshakeResult createHandshakeResult fbb lang-offset model-offset)
+          buffer-size (do
+                        (. Message startMessage fbb)
+                        (. Message addBodyType fbb MessageBody/HandshakeResult)
+                        (. Message addBody fbb result-offset)
+                        (. Message endMessage fbb))]
 
-          _ (.finish fbb offset)
-          data (byte-array offset)]
-
-      (.get (.dataBuffer fbb) data)
-      (zmq/send socket (bytes data))
+      (.finish fbb buffer-size)
+      (zmq/send socket (.sizedByteArray fbb))
       system-name)))
 
 (defn- init-store []
