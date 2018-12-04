@@ -10,7 +10,8 @@
             [foppl.graphical :as graphical]
             [foppl.sampling :as sampling]
             [foppl.hoppl :as hoppl]
-            [foppl.formatter :as formatter])
+            [foppl.formatter :as formatter]
+            [foppl.remote :as remote])
   (:gen-class))
 
 (def ^:private me "foppl")
@@ -58,11 +59,7 @@
       (->> stream
            ast/read-source
            validation/perform
-           hoppl/perform
-           (drop 1000)
-           (take 10000)
-           (hoppl/empirical-mean)
-           (println "Mean:"))
+           remote/perform)
       (catch clojure.lang.ExceptionInfo e
         (let [type (-> e ex-data :type)
               msg (-> (.getMessage e))]
@@ -70,6 +67,5 @@
             (= type :ice) (error (str "Internal Compiler Error: " msg))
             (= type :invalid-program) (error (str "Invalid FOPPL program: " msg))
             :else (error (str "Unhandled exception: " msg)))))
-      (catch RuntimeException e (error (str "Syntax error: " (.getMessage e))))
       (catch AssertionError e (error (str "Invariant violated: " (.getMessage e))))))
   )
