@@ -2,7 +2,9 @@
   "Defines AST data structures and visitor protocol."
   (:require [foppl.utils :as utils]
             [clojure.set :as set]
-            [clojure.edn :as edn]))
+            [clojure.edn :as edn])
+
+  (:import [java.util UUID]))
 
 ;; ================================================================ ;;
 ;;                          RECORD DEFINITIONS                      ;;
@@ -70,11 +72,19 @@
 (defrecord fn-application [name args])
 
 ;; a FOPPL sample event, being applied to a distribution object 'dist'.
-(defrecord sample [dist])
+(defrecord sample [dist uuid])
 
 ;; a FOPPL conditioning operation. Consists of a distribution object
 ;; and a value from a random variable being observed.
-(defrecord observe [dist val])
+(defrecord observe [dist val uuid])
+
+(defn- new-uuid []
+  "Utility method. Generates a unique, random UUID for sample and
+  observe statements. Can later be used to provide a unique address to
+  random variables that is going to remain the same after multiple
+  executions of a previously parsed program."
+
+  (str (UUID/randomUUID)))
 
 ;; ================================================================ ;;
 ;;                         TRAVERSAL FUNCTIONS                      ;;
@@ -189,7 +199,7 @@
   {:pre [(= (count context) 1)]}
   "Sampling from a distribution object."
 
-  (sample. (to-tree (first context))))
+  (sample. (to-tree (first context)) (new-uuid)))
 
 (defn- handle-observe [context]
   {:pre [(= (count context) 2)]}
@@ -197,7 +207,7 @@
   (observe dist val)"
 
   (let [[dist val] context]
-    (observe. (to-tree dist) (to-tree val))))
+    (observe. (to-tree dist) (to-tree val) (new-uuid))))
 
 (defn- handle-fn-application [name args]
   "Function application. Function must be previously declared using
@@ -371,11 +381,11 @@
   (visit-fn-application [v {name :name args :args}]
     (fn-application. name (accept-coll args v)))
 
-  (visit-sample [v {dist :dist}]
-    (sample. (accept dist v)))
+  (visit-sample [v {dist :dist uuid :uuid}]
+    (sample. (accept dist v) uuid))
 
-  (visit-observe [v {dist :dist val :val}]
-    (observe. (accept dist v) (accept val v)))
+  (visit-observe [v {dist :dist val :val uuid :uuid}]
+    (observe. (accept dist v) (accept val v) uuid))
   )
 
 ;; This visitor is responsible for finding out all the free variables

@@ -8,7 +8,9 @@
   (:import [foppl.ast constant]
            [com.google.flatbuffers FlatBufferBuilder]
            [java.nio ByteBuffer]
-           [ppx Handshake HandshakeResult Message MessageBody Run RunResult]))
+           [ppx Handshake HandshakeResult Message MessageBody Run RunResult
+            Sample SampleResult Observe ObserveResult Distribution
+            Uniform Normal]))
 
 ;; The TCP port we will be listening to, waiting for an inference
 ;; engine to contact us using PPX.
@@ -65,33 +67,79 @@
     ;; parse the body as an instance of a message of the given type.
     (.body message obj)))
 
+(defn- send-msg [socket builder]
+  "Convenience method to send the context of a FlatBufferBuilder over
+  the network."
+  (zmq/send socket (.sizedByteArray builder)))
+
+(defn- construct-message [builder type body]
+  "Given a FlatBufferBuilder and a message type and body, this will
+  update the builder to include the actual message to be sent over the
+  network. Adding to the buffer after this function is called will
+  result in a runtime error."
+
+  (let [offset (do
+                 (. Message startMessage builder)
+                 (. Message addBodyType builder type)
+                 (. Message addBody builder body)
+                 (. Message endMessage builder))]
+    (.finish builder offset)
+    offset))
+
+(defn- construct-sample [builder address name dist-type dist]
+  (let [offset (do
+                 (. Sample startSample builder)
+                 (. Sample addAddress builder address)
+                 (. Sample addName builder name)
+                 (. Sample addDistributionType builder dist-type)
+                 (. Sample addDistribution builder dist)
+                 (. Sample endSample builder))]
+
+    (.finish builder offset)
+    offset))
+
+(defn- tensor [builder array])
+
 (defn- handle-handshake [socket handshake]
   "Returns this system's information back to the inference engine as a
   `HandshakeResult` message. Should be called after we received a
   handshake from the inference engine."
 
   (let [fbb (FlatBufferBuilder. 64)
-        lang-offset (.createString fbb lang-name)
-        model-offset (.createString fbb model-name)
-        result-offset (. HandshakeResult createHandshakeResult fbb lang-offset model-offset)
-        buffer-size (do
-                      (. Message startMessage fbb)
-                      (. Message addBodyType fbb MessageBody/HandshakeResult)
-                      (. Message addBody fbb result-offset)
-                      (. Message endMessage fbb))]
+        lang (.createString fbb lang-name)
+        model (.createString fbb model-name)
+        result (. HandshakeResult createHandshakeResult fbb lang model)]
 
-    (.finish fbb buffer-size)
-    (zmq/send socket (.sizedByteArray fbb))))
+    (construct-message fbb MessageBody/HandshakeResult result)
+    (send-msg socket fbb)))
 
 (defn- init-store []
   ;; a store is not used when doing evaluation-based inference in this
   ;; remote model, so just return an empty map.
   {})
 
-(defn- request-sample [socket {dist :n} store]
-  [(ast/constant. (anglican/sample* dist)) store])
+(defn- request-sample [socket {dist :n} _ uuid]
+  (let [uniform? #(= (class %) anglican.runtime.uniform-continuous-distribution)
+        normal? #(= (class %) anglican.runtime.normal-distribution)
 
-(defn- request-observe [socket {dist :n} {val :n :as observed} store]
+        fbb (FlatBufferBuilder. 64)
+        address (.createString fbb uuid)
+        name (.createString fbb "")
+
+        [dist-type dist] (cond
+                           (uniform? dist) [Distribution/Uniform
+                                            (. Uniform createUniform fbb (tensor fbb [(:min dist)]) (tensor fbb [(:max dist)]))]
+
+                           (normal? dist) [Distribution/Normal
+                                           (. Normal createNormal fbb (tensor fbb [(:mean dist)]) (tensor fbb [(:sd dist)]))]
+
+                           :else (utils/foppl-error (str "Unsupported distribution: " (class dist))))
+
+        sample (construct-sample fbb address name dist-type dist)]
+
+    (send-msg socket fbb)))
+
+(defn- request-observe [socket {dist :n} {val :n :as observed} store uuid]
   (let [log-prob (anglican/observe* dist val)]
     [observed store]))
 
@@ -127,19 +175,15 @@
 
              ;; get the system (inference engine's) name from the
              ;; handshake message received
-             system-name (.systemName handshake)
-
-             ;; we are now able to build our lazy sequence of samples
-             ;; since we are connected to the inference engine.
-             samples (samples-lazy-seq socket)]
+             system-name (.systemName handshake)]
 
          (logger "Got handshake from" system-name)
 
          ;; we just need to wait for a `Run` message to be received,
          ;; in which case we sample from the generative model (by
          ;; taking one element from the lazy sequence), and recur.
-         (loop []
-           (receive-msg socket MessageBody/Run)
-           (take 1 samples)
-           (recur)))))))
-
+         (let [samples (samples-lazy-seq socket)]
+           (loop []
+             (receive-msg socket MessageBody/Run)
+             (take 1 samples)
+             (recur))))))))

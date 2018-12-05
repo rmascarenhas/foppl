@@ -107,11 +107,11 @@
   (visit-fn-application [v {name :name args :args}]
     (ast/fn-application. name (accept-coll args v)))
 
-  (visit-sample [v {dist :dist}]
-    (ast/sample. (accept dist v)))
+  (visit-sample [v {dist :dist uuid :uuid}]
+    (ast/sample. (accept dist v) uuid))
 
-  (visit-observe [v {dist :dist val :val}]
-    (ast/observe. (accept dist v) (accept val v))))
+  (visit-observe [v {dist :dist val :val uuid :uuid}]
+    (ast/observe. (accept dist v) (accept val v) uuid)))
 
 (defrecord clojure-value-visitor [])
 
@@ -187,16 +187,17 @@
 ;;   their values at the current point of execution.
 ;;
 ;; * `sample-fn`: a function to be called when a `sample` expression
-;;   is found. It is called with two arguments: the distribution to be
-;;   sampled from and the inference `store`. It must return a vector
-;;   where the first element is the resulting AST node, and the second
-;;   is a (potentially modified) inference store.
+;;   is found. It is called with three arguments: the distribution to
+;;   be sampled from, the inference `store`, and the UUID associated
+;;   with the `sample` AST node. It must return a vector where the
+;;   first element is the resulting AST node, and the second is a
+;;   (potentially modified) inference store.
 ;;
 ;; * `observe-fn`: similar to `sample-fn` for the `observe`
-;;   expression. It is called with three arguments: the distribution
-;;   on which the observation occurs, and value observed, and the
-;;   inference `store`. It must return a value in the same format as
-;;   `sample-fn`.
+;;   expression. It is called with four arguments: the distribution on
+;;   which the observation occurs, the value observed, the inference
+;;   `store`, and the uuid of the `observe` AST node. It must return a
+;;   value in the same format as `sample-fn`.
 (defrecord evaluation-based-inference-visitor [rho store env sample-fn observe-fn])
 
 (defn- with-store [new-store {rho :rho env :env sample-fn :sample-fn observe-fn :observe-fn}]
@@ -329,18 +330,18 @@
 
         :else (utils/foppl-error (str "Undefined function: " name)))))
 
-  (visit-sample [{store :store sample-fn :sample-fn :as v} {dist :dist}]
+  (visit-sample [{store :store sample-fn :sample-fn :as v} {dist :dist uuid :uuid}]
     ;; behavior is inference-algorithm specific. Invoke the
     ;; `sample-fn` function passed to the visitor.
     (let [[reduced-dist new-store] (accept dist v)]
-      (sample-fn reduced-dist new-store)))
+      (sample-fn reduced-dist new-store uuid)))
 
-  (visit-observe [{store :store observe-fn :observe-fn :as v} {dist :dist val :val}]
+  (visit-observe [{store :store observe-fn :observe-fn :as v} {dist :dist val :val uuid :uuid}]
     ;; behavior is inference-algorithm specific. Invoke the
     ;; `observe-fn` function passed to the visitor.
     (let [[reduced-dist store-1] (accept dist v)
           [reduced-val store-2] (accept val (with-store store-1 v))]
-      (observe-fn reduced-dist reduced-val store-2))))
+      (observe-fn reduced-dist reduced-val store-2 uuid))))
 
 (defn- desugar-loops [{defs :defs e :e}]
   "Desugars `loop` constructs in HOPPL (which work differently from
@@ -389,13 +390,13 @@
   algorithm."
   {:log-W 0})
 
-(defn- likelihood-sample-fn [{dist :n} store]
+(defn- likelihood-sample-fn [{dist :n} store _]
   "Function to be invoked on every `sample` expression in a
   likelihood-weighting based inference algorithm. The distribution is
   sampled with Anglican, and the store is unmodified."
   [(ast/constant. (anglican/sample* dist)) store])
 
-(defn- likelihood-observe-fn [{dist :n} {val :n :as observed} store]
+(defn- likelihood-observe-fn [{dist :n} {val :n :as observed} store _]
   "Function to be invoked on every `observe` expression in a
   likelihood-weighting based inference algorithm. The log-likelihood
   of the observation in the distribution given is calculated, and
