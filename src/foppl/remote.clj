@@ -102,6 +102,9 @@
     (. Sample endSample builder)))
 
 (defn- construct-observe [builder address name dist-type dist value]
+  "Given a FlatBufferBuilder, this will add an `Observe` table to the
+  buffer using the offsets passed as arguments."
+
   (do
     (. Observe startObserve builder)
     (. Observe addAddress builder address)
@@ -112,6 +115,10 @@
     (. Observe endObserve builder)))
 
 (defn- construct-run-result [builder result]
+  "Given a FlatBufferBuilder, this adds a `RunResult` table to the
+  buffer, to be returned to the inference engine when we are done
+  running the generative model."
+
   (do
     (. RunResult startRunResult builder)
     (. RunResult addResult builder result)
@@ -239,6 +246,13 @@
       [(ast/constant. (first value)) store])))
 
 (defn- request-observe [socket {dist :n} {val :n :as observed} store uuid]
+  "This function is called when we hit an `observe` expression while
+  evaluating our model. We need to inform the inference engine about
+  the random variable being observed, and what value was observed. On
+  success, the inference engine sends a (empty) `ObserveResult`
+  message. Evaluating this function returns the observed value,
+  although this is not relevant for this remote inference scenario."
+
   (let [fbb (FlatBufferBuilder. 64)
         address (.createString fbb uuid)
         name (.createString fbb "")
@@ -254,10 +268,15 @@
     [observed store]))
 
 (defn- run-result [socket val]
+  "Returns a result `val` of evaluating the generative model. Sends a
+  `RunResult` message to the inference engine. After this is sent, the
+  model server is supposed to wait for another `Run` message, should
+  the inference engine desire to run the model more times in order to
+  determine a posterior distribution."
+
   (when (seq? val)
     (utils/foppl-error "Multidimensional results not supported."))
 
-  (println "Returning result:" val)
   (let [fbb (FlatBufferBuilder. 64)
         result (tensor fbb [val])
         rr (construct-run-result fbb result)]
@@ -309,11 +328,10 @@
          ;; infinite loop where we sample from the generative model
          ;; (by taking one element from the lazy sequence), return the
          ;; result back to the inference engine, and recur.
-         (let [samples (build-lazy-seq socket)]
-           (loop []
-             (logger "Running the model")
+         (loop [samples (build-lazy-seq socket)]
+           (logger "Running the model")
 
-             (let [[{val :n} _] (first (take 1 samples))]
-               (run-result socket val)
-               (receive-msg socket MessageBody/Run)
-               (recur)))))))))
+           (let [[{val :n} _] (first (take 1 samples))]
+             (run-result socket val)
+             (receive-msg socket MessageBody/Run)
+             (recur (next samples)))))))))
