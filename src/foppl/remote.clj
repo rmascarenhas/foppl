@@ -10,7 +10,7 @@
            [java.nio ByteBuffer]
            [ppx Handshake HandshakeResult Message MessageBody Run RunResult
             Sample SampleResult Observe ObserveResult Distribution
-            Uniform Normal]))
+            Uniform Normal Tensor]))
 
 ;; The TCP port we will be listening to, waiting for an inference
 ;; engine to contact us using PPX.
@@ -27,7 +27,8 @@
 ;; arguments), return an instance of a message of that type.
 (def ^:private message-type-to-class
   {MessageBody/Handshake #(Handshake.)
-   MessageBody/Run #(Run.)})
+   MessageBody/Run #(Run.)
+   MessageBody/SampleResult #(SampleResult.)})
 
 (defn- create-zmq-socket []
   "Creates a zeromq TCP socket listening on all available interfaces
@@ -41,7 +42,7 @@
   the given `type`, throwing an exception if that is not the
   case. Returns an instace of the message of the requested type."
 
-  (let [;; create a `byte[]` with the data read from the socket
+  (let [ ;; create a `byte[]` with the data read from the socket
         blob (zmq/receive socket)
 
         ;; wrap it in an instance of `java.nio.ByteBuffer` (required
@@ -87,18 +88,56 @@
     offset))
 
 (defn- construct-sample [builder address name dist-type dist]
-  (let [offset (do
-                 (. Sample startSample builder)
-                 (. Sample addAddress builder address)
-                 (. Sample addName builder name)
-                 (. Sample addDistributionType builder dist-type)
-                 (. Sample addDistribution builder dist)
-                 (. Sample endSample builder))]
+  "Given a FlatBufferBuilder, this will add a `Sample` table to the
+  buffer with the name, address, distribution type and object
+  according to the parameters passed."
 
-    (.finish builder offset)
-    offset))
+  (do
+    (. Sample startSample builder)
+    (. Sample addAddress builder address)
+    (. Sample addName builder name)
+    (. Sample addDistributionType builder dist-type)
+    (. Sample addDistribution builder dist)
+    (. Sample endSample builder)))
 
-(defn- tensor [builder array])
+(defn- tensor [builder array]
+  "Given an array of data, this will add a `Tensor` table to the
+  FlatBuffer passed. Returns the offset of the tensor in the buffer."
+
+  (let [;; tensors are encoded as collections of doubles
+        doubles (map double array)
+
+        ;; we also need the shape of the tensor
+        shape [(count doubles)]
+
+        ;; create the data and shape vectors into the buffer.
+        data-vec (. Tensor createDataVector builder (double-array doubles))
+        shape-vec (. Tensor createShapeVector builder (int-array shape))]
+
+    ;; for simplicity (and since most of the simple distributions we
+    ;; are concerned with do not need them), we will only support
+    ;; "scalars" as tensors.
+    (when-not (= (count doubles) 1)
+      (utils/foppl-error "Multidimensional tensors not supported."))
+
+    ;; finally, we can create the tensor in the flatbuffer.
+    (do
+      (. Tensor startTensor builder)
+      (. Tensor addData builder data-vec)
+      (. Tensor addShape builder shape-vec)
+      (. Tensor endTensor builder))))
+
+(defn- tensor-to-seq [tensor]
+  "Transforms a `Tensor` received from the inference engine back into
+  a Clojure collection that we can manipulate. The same limitations
+  described in the `tensor` function apply (i.e., only 'scalars' are
+  supported)"
+
+  (when-not (= (.shapeLength tensor) 1)
+    (utils/foppl-error "Multidimensional tensors not supported."))
+
+  (let [shape (.shape tensor 0)]
+    (reduce #(conj %1 (.data tensor %2)) [] (range 0 shape))))
 
 (defn- handle-handshake [socket handshake]
   "Returns this system's information back to the inference engine as a
@@ -118,14 +157,30 @@
   ;; remote model, so just return an empty map.
   {})
 
-(defn- request-sample [socket {dist :n} _ uuid]
-  (let [uniform? #(= (class %) anglican.runtime.uniform-continuous-distribution)
+(defn- request-sample [socket {dist :n} store uuid]
+  "Function called when a `sample` expression is found (during
+  evaluation-based inference). Since this language is delegating all
+  inference tasks to the inference engine via PPX, this function only
+  sends a message to the inference engine with the distribution being
+  sampled, gets a response back, and proceeds with the
+  computation. Note that the `sample` AST node's UUID is used as the
+  address of the corresponding random variable."
+
+  (let [;; helper functions to identify the distribution being sampled
+        ;; from. Assumes we are using Anglican as the underlying
+        ;; library.
+        uniform? #(= (class %) anglican.runtime.uniform-continuous-distribution)
         normal? #(= (class %) anglican.runtime.normal-distribution)
 
         fbb (FlatBufferBuilder. 64)
         address (.createString fbb uuid)
         name (.createString fbb "")
 
+        ;; we need to fill the `distribution` union on `Sample` with
+        ;; the correct distribution type; this checks the type of
+        ;; distribution being sampled and computes the distribution
+        ;; type and adds the distribution object to the flatbuffer
+        ;; object correspondingly.
         [dist-type dist] (cond
                            (uniform? dist) [Distribution/Uniform
                                             (. Uniform createUniform fbb (tensor fbb [(:min dist)]) (tensor fbb [(:max dist)]))]
@@ -135,9 +190,26 @@
 
                            :else (utils/foppl-error (str "Unsupported distribution: " (class dist))))
 
+        ;; construct a sample table in the flatbuffer
         sample (construct-sample fbb address name dist-type dist)]
 
-    (send-msg socket fbb)))
+    ;; build a `Sample` message with the data computed above --
+    ;; inference engine is going to sample for us and return a result.
+    (construct-message fbb MessageBody/Sample sample)
+    (send-msg socket fbb)
+
+    ;; wait for the inference engine to return a `SampleResult`. The
+    ;; result should contain a tensor with the result of the sampling
+    ;; process. We return the tensor as an AST constant as expected by
+    ;; the evaluation module and proceed.
+    (let [sample-result (receive-msg socket MessageBody/SampleResult)
+          result (.result sample-result)
+          value (tensor-to-seq result)]
+
+      (when-not (= (count value) 1)
+        (utils/foppl-error (str "Sampled values should be scalars, got:" value)))
+
+      [(ast/constant. (first value)) store])))
 
 (defn- request-observe [socket {dist :n} {val :n :as observed} store uuid]
   (let [log-prob (anglican/observe* dist val)]
@@ -158,7 +230,7 @@
          ;; since sample and observe expressions need to contact the
          ;; inference engine in order to register random variables and
          ;; get samples and log probabilities.
-         samples-lazy-seq #(hoppl/perform program init-store (partial request-sample %) (partial request-observe %))]
+         build-lazy-seq #(hoppl/perform program init-store (partial request-sample %) (partial request-observe %))]
 
      (with-open [socket (create-zmq-socket)]
        (logger (str "Listening on tcp://*:" tcp-port))
@@ -179,11 +251,17 @@
 
          (logger "Got handshake from" system-name)
 
-         ;; we just need to wait for a `Run` message to be received,
-         ;; in which case we sample from the generative model (by
-         ;; taking one element from the lazy sequence), and recur.
-         (let [samples (samples-lazy-seq socket)]
+         ;; once the handshake was received from the inference engine,
+         ;; we now wait for it to instruct the generative model to
+         ;; `Run`.
+         (receive-msg socket MessageBody/Run)
+
+         ;; infinite loop where we sample from the generative model
+         ;; (by taking one element from the lazy sequence), return the
+         ;; result back to the inference engine, and recur.
+         (let [samples (build-lazy-seq socket)]
            (loop []
-             (receive-msg socket MessageBody/Run)
-             (take 1 samples)
-             (recur))))))))
+             (let [[val _] (take 1 samples)]
+               ;; (run-result val) return the result to the inference engine
+               (receive-msg socket MessageBody/Run)
+               (recur)))))))))
