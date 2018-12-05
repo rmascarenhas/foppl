@@ -28,7 +28,8 @@
 (def ^:private message-type-to-class
   {MessageBody/Handshake #(Handshake.)
    MessageBody/Run #(Run.)
-   MessageBody/SampleResult #(SampleResult.)})
+   MessageBody/SampleResult #(SampleResult.)
+   MessageBody/ObserveResult #(ObserveResult.)})
 
 (defn- create-zmq-socket []
   "Creates a zeromq TCP socket listening on all available interfaces
@@ -100,11 +101,27 @@
     (. Sample addDistribution builder dist)
     (. Sample endSample builder)))
 
+(defn- construct-observe [builder address name dist-type dist value]
+  (do
+    (. Observe startObserve builder)
+    (. Observe addAddress builder address)
+    (. Observe addName builder name)
+    (. Observe addDistributionType builder dist-type)
+    (. Observe addDistribution builder dist)
+    (. Observe addValue builder value)
+    (. Observe endObserve builder)))
+
+(defn- construct-run-result [builder result]
+  (do
+    (. RunResult startRunResult builder)
+    (. RunResult addResult builder result)
+    (. RunResult endRunResult builder)))
+
 (defn- tensor [builder array]
   "Given an array of data, this will add a `Tensor` table to the
   FlatBuffer passed. Returns the offset of the tensor in the buffer."
 
-  (let [;; tensors are encoded as collections of doubles
+  (let [ ;; tensors are encoded as collections of doubles
         doubles (map double array)
 
         ;; we also need the shape of the tensor
@@ -152,6 +169,32 @@
     (construct-message fbb MessageBody/HandshakeResult result)
     (send-msg socket fbb)))
 
+(defn- fill-distribution [builder dist]
+  "Given a distribution object (represented as an instance of an
+  Anglican distribution object), and a FlatBufferBuilder instance,
+  this will insert a corresponding distribution into the
+  buffer. Returns a pair of [distribution-type and
+  distribution-offset]."
+
+  (let [;; helper functions to identify the distribution being sampled
+        ;; from. Assumes we are using Anglican as the underlying
+        ;; library.
+        uniform? #(= (class %) anglican.runtime.uniform-continuous-distribution)
+        normal? #(= (class %) anglican.runtime.normal-distribution)
+        poisson? #(= (class %) anglican.runtime.poisson-distribution)]
+
+    (cond
+      (uniform? dist) [Distribution/Uniform
+                       (. Uniform createUniform builder (tensor builder [(:min dist)]) (tensor builder [(:max dist)]))]
+
+      (normal? dist) [Distribution/Normal
+                      (. Normal createNormal builder (tensor builder [(:mean dist)]) (tensor builder [(:sd dist)]))]
+
+      (poisson? dist) [Distribution/Poisson
+                       (. Poisson createPoisson builder (tensor builder [(:lambda dist)]))]
+
+      :else (utils/foppl-error (str "Unsupported distribution: " (class dist))))))
+
 (defn- init-store []
   ;; a store is not used when doing evaluation-based inference in this
   ;; remote model, so just return an empty map.
@@ -166,33 +209,13 @@
   computation. Note that the `sample` AST node's UUID is used as the
   address of the corresponding random variable."
 
-  (let [;; helper functions to identify the distribution being sampled
-        ;; from. Assumes we are using Anglican as the underlying
-        ;; library.
-        uniform? #(= (class %) anglican.runtime.uniform-continuous-distribution)
-        normal? #(= (class %) anglican.runtime.normal-distribution)
-        poisson? #(= (class %) anglican.runtime.poisson-distribution)
-
-        fbb (FlatBufferBuilder. 64)
+  (let [fbb (FlatBufferBuilder. 64)
         address (.createString fbb uuid)
         name (.createString fbb "")
 
-        ;; we need to fill the `distribution` union on `Sample` with
-        ;; the correct distribution type; this checks the type of
-        ;; distribution being sampled and computes the distribution
-        ;; type and adds the distribution object to the flatbuffer
-        ;; object correspondingly.
-        [dist-type dist] (cond
-                           (uniform? dist) [Distribution/Uniform
-                                            (. Uniform createUniform fbb (tensor fbb [(:min dist)]) (tensor fbb [(:max dist)]))]
-
-                           (normal? dist) [Distribution/Normal
-                                           (. Normal createNormal fbb (tensor fbb [(:mean dist)]) (tensor fbb [(:sd dist)]))]
-
-                           (poisson? dist) [Distribution/Poisson
-                                            (. Poisson createPoisson fbb (tensor fbb [(:lambda dist)]))]
-
-                           :else (utils/foppl-error (str "Unsupported distribution: " (class dist))))
+        ;; computes the distribution type and adds the distribution
+        ;; object to the flatbuffer object.
+        [dist-type dist] (fill-distribution fbb dist)
 
         ;; construct a sample table in the flatbuffer
         sample (construct-sample fbb address name dist-type dist)]
@@ -216,8 +239,31 @@
       [(ast/constant. (first value)) store])))
 
 (defn- request-observe [socket {dist :n} {val :n :as observed} store uuid]
-  (let [log-prob (anglican/observe* dist val)]
+  (let [fbb (FlatBufferBuilder. 64)
+        address (.createString fbb uuid)
+        name (.createString fbb "")
+
+        [dist-type dist] (fill-distribution fbb dist)
+        observed (tensor fbb [val])
+        observe (construct-observe fbb address name dist-type dist observed)]
+
+    (construct-message fbb MessageBody/Observe observe)
+    (send-msg socket fbb)
+
+    (receive-msg socket MessageBody/ObserveResult)
     [observed store]))
+
+(defn- run-result [socket val]
+  (when (seq? val)
+    (utils/foppl-error "Multidimensional results not supported."))
+
+  (println "Returning result:" val)
+  (let [fbb (FlatBufferBuilder. 64)
+        result (tensor fbb [val])
+        rr (construct-run-result fbb result)]
+
+    (construct-message fbb MessageBody/RunResult rr)
+    (send-msg socket fbb)))
 
 (defn perform
   "Performs waits for communication from some inference engine that
@@ -229,7 +275,7 @@
   ([program] (perform program println))
 
   ([program logger]
-   (let [;; given a socket, this will return a lazy sequence of
+   (let [ ;; given a socket, this will return a lazy sequence of
          ;; samples from the generative model. The socket is necessary
          ;; since sample and observe expressions need to contact the
          ;; inference engine in order to register random variables and
@@ -240,7 +286,7 @@
        (logger (str "Listening on tcp://*:" tcp-port))
        (logger "Waiting for handshake from inference engine.")
 
-       (let [;; before the model is run, the inference engine needs to
+       (let [ ;; before the model is run, the inference engine needs to
              ;; send a handshake message to initiate communication.
              handshake (receive-msg socket MessageBody/Handshake)
 
@@ -265,7 +311,9 @@
          ;; result back to the inference engine, and recur.
          (let [samples (build-lazy-seq socket)]
            (loop []
-             (let [[val _] (take 1 samples)]
-               ;; (run-result val) return the result to the inference engine
+             (logger "Running the model")
+
+             (let [[{val :n} _] (first (take 1 samples))]
+               (run-result socket val)
                (receive-msg socket MessageBody/Run)
                (recur)))))))))
