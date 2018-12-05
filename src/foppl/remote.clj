@@ -10,7 +10,7 @@
            [java.nio ByteBuffer]
            [ppx Handshake HandshakeResult Message MessageBody Run RunResult
             Sample SampleResult Observe ObserveResult Distribution
-            Uniform Normal Tensor]))
+            Uniform Normal Poisson Tensor]))
 
 ;; The TCP port we will be listening to, waiting for an inference
 ;; engine to contact us using PPX.
@@ -171,6 +171,7 @@
         ;; library.
         uniform? #(= (class %) anglican.runtime.uniform-continuous-distribution)
         normal? #(= (class %) anglican.runtime.normal-distribution)
+        poisson? #(= (class %) anglican.runtime.poisson-distribution)
 
         fbb (FlatBufferBuilder. 64)
         address (.createString fbb uuid)
@@ -187,6 +188,9 @@
 
                            (normal? dist) [Distribution/Normal
                                            (. Normal createNormal fbb (tensor fbb [(:mean dist)]) (tensor fbb [(:sd dist)]))]
+
+                           (poisson? dist) [Distribution/Poisson
+                                            (. Poisson createPoisson fbb (tensor fbb [(:lambda dist)]))]
 
                            :else (utils/foppl-error (str "Unsupported distribution: " (class dist))))
 
