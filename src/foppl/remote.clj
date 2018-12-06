@@ -124,25 +124,29 @@
     (. RunResult addResult builder result)
     (. RunResult endRunResult builder)))
 
-(defn- tensor [builder array]
+(defn- tensor [builder data]
   "Given an array of data, this will add a `Tensor` table to the
   FlatBuffer passed. Returns the offset of the tensor in the buffer."
 
+  (when (seq? (first data))
+    (utils/foppl-error "Multidimensional tensors not supported"))
+
   (let [ ;; tensors are encoded as collections of doubles
-        doubles (map double array)
+        doubles (map double data)
 
         ;; we also need the shape of the tensor
-        shape [(count doubles)]
+        shape []
 
         ;; create the data and shape vectors into the buffer.
-        data-vec (. Tensor createDataVector builder (double-array doubles))
-        shape-vec (. Tensor createShapeVector builder (int-array shape))]
+        data-vec (do
+                   (. Tensor startDataVector builder (count data))
+                   (doall (map #(.addDouble builder %) doubles))
+                   (.endVector builder))
 
-    ;; for simplicity (and since most of the simple distributions we
-    ;; are concerned with do not need them), we will only support
-    ;; "scalars" as tensors.
-    (when-not (= (count doubles) 1)
-      (utils/foppl-error "Multidimensional tensors not supported."))
+        shape-vec (do
+                    (. Tensor startShapeVector builder (count shape))
+                    (doall (map #(.addInt builder %) shape))
+                    (.endVector builder))]
 
     ;; finally, we can create the tensor in the flatbuffer.
     (do
@@ -160,7 +164,7 @@
   (when-not (= (.shapeLength tensor) 1)
     (utils/foppl-error "Multidimensional tensors not supported."))
 
-  (let [shape (.shape tensor 0)]
+  (let [shape (.shapeLength tensor)]
     (reduce #(conj %1 (.data tensor %2)) [] (range 0 shape))))
 
 (defn- handle-handshake [socket handshake]
@@ -294,44 +298,39 @@
   ([program] (perform program println))
 
   ([program logger]
-   (let [ ;; given a socket, this will return a lazy sequence of
-         ;; samples from the generative model. The socket is necessary
-         ;; since sample and observe expressions need to contact the
-         ;; inference engine in order to register random variables and
-         ;; get samples and log probabilities.
-         build-lazy-seq #(hoppl/perform program init-store (partial request-sample %) (partial request-observe %))]
+   (with-open [socket (create-zmq-socket)]
+     (logger (str "Listening on tcp://*:" tcp-port))
+     (logger "Waiting for handshake from inference engine.")
 
-     (with-open [socket (create-zmq-socket)]
-       (logger (str "Listening on tcp://*:" tcp-port))
-       (logger "Waiting for handshake from inference engine.")
+     (let [ ;; before the model is run, the inference engine needs to
+           ;; send a handshake message to initiate communication.
+           handshake (receive-msg socket MessageBody/Handshake)
 
-       (let [ ;; before the model is run, the inference engine needs to
-             ;; send a handshake message to initiate communication.
-             handshake (receive-msg socket MessageBody/Handshake)
+           ;; the handshake needs to be followed by a
+           ;; `HandshakeResult`, in which the language and model
+           ;; names are communicated.
+           _ (handle-handshake socket handshake)
 
-             ;; the handshake needs to be followed by a
-             ;; `HandshakeResult`, in which the language and model
-             ;; names are communicated.
-             _ (handle-handshake socket handshake)
+           ;; get the system (inference engine's) name from the
+           ;; handshake message received
+           system-name (.systemName handshake)]
 
-             ;; get the system (inference engine's) name from the
-             ;; handshake message received
-             system-name (.systemName handshake)]
+       (logger "Got handshake from" system-name)
 
-         (logger "Got handshake from" system-name)
+       ;; once the handshake was received from the inference engine,
+       ;; we now wait for it to instruct the generative model to
+       ;; `Run`.
+       (receive-msg socket MessageBody/Run)
 
-         ;; once the handshake was received from the inference engine,
-         ;; we now wait for it to instruct the generative model to
-         ;; `Run`.
-         (receive-msg socket MessageBody/Run)
-
-         ;; infinite loop where we sample from the generative model
-         ;; (by taking one element from the lazy sequence), return the
-         ;; result back to the inference engine, and recur.
-         (loop [samples (build-lazy-seq socket)]
+       ;; infinite loop where we sample from the generative model
+       ;; (by taking one element from the lazy sequence), return the
+       ;; result back to the inference engine, and recur.
+       (let [sample-fn (partial request-sample socket)
+             observe-fn (partial request-observe socket)]
+         (loop []
            (logger "Running the model")
 
-           (let [[{val :n} _] (first (take 1 samples))]
+           (let [[{val :n} _] (hoppl/forward program init-store sample-fn observe-fn)]
              (run-result socket val)
              (receive-msg socket MessageBody/Run)
-             (recur (next samples)))))))))
+             (recur))))))))
