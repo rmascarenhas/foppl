@@ -432,13 +432,17 @@
                                 weight (:log-W new-store)]
                             (lazy-seq (cons [val weight] (perform-inference program store gen-fn))))))
 
-(defn forward [program init-store sample-fn observe-fn]
+(defn forward
   "Runs the generative model forward once."
 
-  (->> program
-       desugar
-       ho-builtins
-       (interpret sample-fn observe-fn (init-store))))
+  ([program init-store sample-fn observe-fn]
+   (forward program init-store sample-fn observe-fn (partial interpret sample-fn observe-fn (init-store))))
+
+  ([program init-store sample-fn observe-fn interpret-fn]
+   (->> program
+        desugar
+        ho-builtins
+        interpret-fn)))
 
 (defn perform
   "Performs evaluation-based inference of a HOPPL program. First, the
