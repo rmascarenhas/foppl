@@ -7,8 +7,7 @@ import java.lang.*;
 import java.util.*;
 import com.google.flatbuffers.*;
 
-@SuppressWarnings("unused")
-public final class Message extends Table {
+@SuppressWarnings("unused")public final class Message extends Table {
   public static Message getRootAsMessage(ByteBuffer _bb) { return getRootAsMessage(_bb, new Message()); }
   public static Message getRootAsMessage(ByteBuffer _bb, Message obj) { _bb.order(ByteOrder.LITTLE_ENDIAN); return (obj.__assign(_bb.getInt(_bb.position()) + _bb.position(), _bb)); }
   public static boolean MessageBufferHasIdentifier(ByteBuffer _bb) { return __has_identifier(_bb, "PPXF"); }

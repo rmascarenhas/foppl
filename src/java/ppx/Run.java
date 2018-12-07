@@ -7,8 +7,7 @@ import java.lang.*;
 import java.util.*;
 import com.google.flatbuffers.*;
 
-@SuppressWarnings("unused")
-public final class Run extends Table {
+@SuppressWarnings("unused")public final class Run extends Table {
   public static Run getRootAsRun(ByteBuffer _bb) { return getRootAsRun(_bb, new Run()); }
   public static Run getRootAsRun(ByteBuffer _bb, Run obj) { _bb.order(ByteOrder.LITTLE_ENDIAN); return (obj.__assign(_bb.getInt(_bb.position()) + _bb.position(), _bb)); }
   public void __init(int _i, ByteBuffer _bb) { bb_pos = _i; bb = _bb; }

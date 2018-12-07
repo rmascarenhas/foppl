@@ -7,8 +7,7 @@ import java.lang.*;
 import java.util.*;
 import com.google.flatbuffers.*;
 
-@SuppressWarnings("unused")
-public final class Handshake extends Table {
+@SuppressWarnings("unused")public final class Handshake extends Table {
   public static Handshake getRootAsHandshake(ByteBuffer _bb) { return getRootAsHandshake(_bb, new Handshake()); }
   public static Handshake getRootAsHandshake(ByteBuffer _bb, Handshake obj) { _bb.order(ByteOrder.LITTLE_ENDIAN); return (obj.__assign(_bb.getInt(_bb.position()) + _bb.position(), _bb)); }
   public void __init(int _i, ByteBuffer _bb) { bb_pos = _i; bb = _bb; }

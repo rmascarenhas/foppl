@@ -7,8 +7,7 @@ import java.lang.*;
 import java.util.*;
 import com.google.flatbuffers.*;
 
-@SuppressWarnings("unused")
-public final class Observe extends Table {
+@SuppressWarnings("unused")public final class Observe extends Table {
   public static Observe getRootAsObserve(ByteBuffer _bb) { return getRootAsObserve(_bb, new Observe()); }
   public static Observe getRootAsObserve(ByteBuffer _bb, Observe obj) { _bb.order(ByteOrder.LITTLE_ENDIAN); return (obj.__assign(_bb.getInt(_bb.position()) + _bb.position(), _bb)); }
   public void __init(int _i, ByteBuffer _bb) { bb_pos = _i; bb = _bb; }
