@@ -2,6 +2,7 @@
   (:require [foppl.ast :as ast]
             [foppl.utils :as utils]
             [foppl.hoppl :as hoppl]
+            [foppl.autodiff :as autodiff]
             [anglican.runtime :as anglican]
             [zeromq.zmq :as zmq])
 
@@ -9,12 +10,18 @@
            [com.google.flatbuffers FlatBufferBuilder]
            [java.nio ByteBuffer]
            [ppx Handshake HandshakeResult Message MessageBody Run RunResult
-            Sample SampleResult Observe ObserveResult Distribution
-            Uniform Normal Poisson Tensor]))
+            Sample SampleResult Observe ObserveResult Forward ForwardResult
+            Backward BackwardResult Distribution Uniform Normal Poisson Tensor]))
+
+(defn- exp [n]
+  "Alias for `Math/exp`. Since gradient functions are evaluated in the
+  context of this namespace."
+
+  (Math/exp n))
 
 ;; The TCP port we will be listening to, waiting for an inference
 ;; engine to contact us using PPX.
-(def ^:private tcp-port "5032")
+(def ^:private tcp-port "5555")
 
 ;; Name of the model's language. Let's always call it FOPPL.
 (def ^:private lang-name "FOPPL")
@@ -29,7 +36,18 @@
   {MessageBody/Handshake #(Handshake.)
    MessageBody/Run #(Run.)
    MessageBody/SampleResult #(SampleResult.)
-   MessageBody/ObserveResult #(ObserveResult.)})
+   MessageBody/ObserveResult #(ObserveResult.)
+   MessageBody/Forward #(Forward.)
+   MessageBody/Backward #(Backward.)})
+
+;; Map of differentiable functions provided by this remote PPX
+;; server. Ideally, these should be read from a file, but they are
+;; declared statically here for demonstration purposes.
+(def ^:private differentiable-functions
+  {:exp '(fn [x] (exp x))
+   :sin '(fn [x] (sin x))
+   :cos '(fn [x] (cos x))
+   :normpdf '(fn [x mu sigma] (normpdf x mu sigma))})
 
 (defn- create-zmq-socket []
   "Creates a zeromq TCP socket listening on all available interfaces
@@ -38,10 +56,12 @@
     (doto (zmq/socket context :rep)
       (zmq/bind (str "tcp://*:" tcp-port)))))
 
-(defn- receive-msg [socket type]
+(defn- receive-msg [socket types]
   "Receives a message over `socket`. Enforces that the message is of
-  the given `type`, throwing an exception if that is not the
-  case. Returns an instace of the message of the requested type."
+  the one of the given `types`, throwing an exception if that is not
+  the case. Returns a vector where the first element is the type of
+  the message received, and the second is an instance of the message
+  of the requested type."
 
   (let [ ;; create a `byte[]` with the data read from the socket
         blob (zmq/receive socket)
@@ -58,16 +78,16 @@
 
         ;; get the constructor from our message-type to constructor
         ;; mapping, and create a new instance of it.
-        ctor (get message-type-to-class type)
+        ctor (get message-type-to-class message-type)
         obj (ctor)]
 
-    ;; error out in case the message type is different from the one
-    ;; expected.
-    (when-not (= type message-type)
+    ;; error out in case the message type is different from the valid
+    ;; set of expected messages
+    (when-not (some #(= message-type %) types)
       (utils/foppl-error (str "PPX: Unexpected message received (" message-type ")")))
 
     ;; parse the body as an instance of a message of the given type.
-    (.body message obj)))
+    [message-type (.body message obj)]))
 
 (defn- send-msg [socket builder]
   "Convenience method to send the context of a FlatBufferBuilder over
@@ -123,6 +143,26 @@
     (. RunResult startRunResult builder)
     (. RunResult addResult builder result)
     (. RunResult endRunResult builder)))
+
+(defn- construct-forward-result [builder result]
+  "Given a FlatBufferBuilder, this adds a `ForwardResult` table to the
+  buffer, to be returned to the inference engine when forward
+  computation in an automatic differentiation process is done."
+
+  (do
+    (. ForwardResult startForwardResult builder)
+    (. ForwardResult addOutput builder result)
+    (. ForwardResult endForwardResult builder)))
+
+(defn- construct-backward-result [builder result]
+  "Given a FlatBufferBuilder, this adds a `BackwardResult` table to
+  the buffer, to be returned to the inference engine when the backward
+  step in an automatic differentiation process is done."
+
+  (do
+    (. BackwardResult startBackwardResult builder)
+    (. BackwardResult addGradInput builder result)
+    (. BackwardResult endBackwardResult builder)))
 
 (defn- tensor [builder data]
   "Given an array of data, this will add a `Tensor` table to the
@@ -240,7 +280,7 @@
     ;; result should contain a tensor with the result of the sampling
     ;; process. We return the tensor as an AST constant as expected by
     ;; the evaluation module and proceed.
-    (let [sample-result (receive-msg socket MessageBody/SampleResult)
+    (let [[_ sample-result] (receive-msg socket [MessageBody/SampleResult])
           result (.result sample-result)
           value (tensor-to-seq result)]
 
@@ -268,7 +308,7 @@
     (construct-message fbb MessageBody/Observe observe)
     (send-msg socket fbb)
 
-    (receive-msg socket MessageBody/ObserveResult)
+    (receive-msg socket [MessageBody/ObserveResult])
     [observed store]))
 
 (defn- run-result [socket val]
@@ -288,6 +328,44 @@
     (construct-message fbb MessageBody/RunResult rr)
     (send-msg socket fbb)))
 
+(defn- autograd-apply [name args]
+  "Calculates the gradient of a function with the given `name` with
+  the given `args`. If the function is not declared in
+  `differentiable-functions`, this will throw an exception. Returns a
+  vector of the form `[function-result, gradient-wrt-each-parameter]`"
+
+  (let [f (doto (get differentiable-functions (keyword name))
+            (when-not
+                (utils/foppl-error (str "Unknown differentiable function: " name))))
+
+        grad-fn (binding [*ns* (the-ns 'foppl.remote)]
+                  (eval (autodiff/perform f)))]
+
+    (apply grad-fn args)))
+
+(defn- autograd-forward [socket name args]
+  "Handles the forward passs in an automatic differentiation process."
+
+  (let [[forward _] (autograd-apply name args)
+        fbb (FlatBufferBuilder. 64)
+        result (tensor fbb [forward])
+        fr (construct-forward-result fbb result)]
+
+    (construct-message fbb MessageBody/ForwardResult fr)
+    (send-msg socket fbb)))
+
+(defn- autograd-backward [socket name args grad-output]
+  "Handles the backward pass in an automatic differentiation process."
+
+  (let [[_ backward] (autograd-apply name args)
+        fbb (FlatBufferBuilder. 64)
+        result (* (first grad-output) (first (vals backward)))
+        output (tensor fbb [result])
+        br (construct-backward-result fbb output)]
+
+    (construct-message fbb MessageBody/BackwardResult br)
+    (send-msg socket fbb)))
+
 (defn perform
   "Performs waits for communication from some inference engine that
   implements the PPX protocol and controls the generative model
@@ -304,7 +382,7 @@
 
      (let [ ;; before the model is run, the inference engine needs to
            ;; send a handshake message to initiate communication.
-           handshake (receive-msg socket MessageBody/Handshake)
+           [_ handshake] (receive-msg socket [MessageBody/Handshake])
 
            ;; the handshake needs to be followed by a
            ;; `HandshakeResult`, in which the language and model
@@ -317,20 +395,35 @@
 
        (logger "Got handshake from" system-name)
 
-       ;; once the handshake was received from the inference engine,
-       ;; we now wait for it to instruct the generative model to
-       ;; `Run`.
-       (receive-msg socket MessageBody/Run)
-
-       ;; infinite loop where we sample from the generative model
+       ;; infinite loop where we wait for the next message from the
+       ;; inference engine. It must be either a `Run` operation, in
+       ;; which case the generative model is run and the result is
+       ;; returned back to the inference engine; or a `Forward` call,
+       ;; indicating that the inference engine is performing automatic
+       ;; differentiation of a function that is partly defined here.
        ;; (by taking one element from the lazy sequence), return the
        ;; result back to the inference engine, and recur.
        (let [sample-fn (partial request-sample socket)
-             observe-fn (partial request-observe socket)]
-         (loop []
-           (logger "Running the model")
+             observe-fn (partial request-observe socket)
+             next-msg #(receive-msg socket [MessageBody/Run MessageBody/Forward MessageBody/Backward])]
+         (loop [[type message] (next-msg)]
+           (cond
+             (= type MessageBody/Run) (do
+                                        (logger "Running the model")
 
-           (let [[{val :n} _] (hoppl/forward program init-store sample-fn observe-fn)]
-             (run-result socket val)
-             (receive-msg socket MessageBody/Run)
-             (recur))))))))
+                                        (let [[{val :n} _] (hoppl/forward program init-store sample-fn observe-fn)]
+                                          (run-result socket val)))
+
+             (= type MessageBody/Forward) (do
+                                            (logger "Calculating gradient (forward)")
+                                            (autograd-forward socket (.name message) (tensor-to-seq (.input message))))
+
+             (= type MessageBody/Backward) (do
+                                             (logger "Calculating gradient (backward)")
+                                             (autograd-backward socket
+                                                                (.name message)
+                                                                (tensor-to-seq (.input message))
+                                                                (tensor-to-seq (.gradOutput message)))))
+
+
+           (recur (next-msg))))))))
