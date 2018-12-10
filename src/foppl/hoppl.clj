@@ -167,7 +167,7 @@
   `eval/all-builtins`."
   (contains? eval/all-builtins name))
 
-(defn- to-clojure-value  [n]
+(defn to-clojure-value [n]
   "Transforms an AST node `n` in its corresponding Clojure value."
   (let [v (clojure-value-visitor.)]
     (accept n v)))
@@ -438,7 +438,7 @@
   ([program init-store sample-fn observe-fn]
    (forward program init-store sample-fn observe-fn (partial interpret sample-fn observe-fn (init-store))))
 
-  ([program init-store sample-fn observe-fn interpret-fn]
+  ([program interpret-fn]
    (->> program
         desugar
         ho-builtins

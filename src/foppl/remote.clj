@@ -1,12 +1,13 @@
 (ns foppl.remote
-  (:require [foppl.ast :as ast]
+  (:require [foppl.ast :as ast :refer [accept]]
             [foppl.utils :as utils]
             [foppl.hoppl :as hoppl]
             [foppl.autodiff :as autodiff]
+            [foppl.eval :as eval]
             [anglican.runtime :as anglican]
             [zeromq.zmq :as zmq])
 
-  (:import [foppl.ast constant]
+  (:import [foppl.ast constant literal-vector literal-map]
            [com.google.flatbuffers FlatBufferBuilder]
            [java.nio ByteBuffer]
            [ppx Handshake HandshakeResult Message MessageBody Run RunResult
@@ -246,19 +247,14 @@
 
       :else (utils/foppl-error (str "Unsupported distribution: " (class dist))))))
 
-(defn- init-store []
-  ;; a store is not used when doing evaluation-based inference in this
-  ;; remote model, so just return an empty map.
-  {})
-
-(defn- request-sample [socket {dist :n} store uuid]
+(defn- request-sample [socket {dist :n} uuid]
   "Function called when a `sample` expression is found (during
   evaluation-based inference). Since this language is delegating all
   inference tasks to the inference engine via PPX, this function only
   sends a message to the inference engine with the distribution being
-  sampled, gets a response back, and proceeds with the
-  computation. Note that the `sample` AST node's UUID is used as the
-  address of the corresponding random variable."
+  sampled, gets a response back, and proceeds with the computation.
+  Note that the `sample` AST node's UUID is used as the address of the
+  corresponding random variable."
 
   (let [fbb (FlatBufferBuilder. 64)
         address (.createString fbb uuid)
@@ -287,9 +283,9 @@
       (when-not (= (count value) 1)
         (utils/foppl-error (str "Sampled values should be scalars, got:" value)))
 
-      [(ast/constant. (first value)) store])))
+      (ast/constant. (first value)))))
 
-(defn- request-observe [socket {dist :n} {val :n :as observed} store uuid]
+(defn- request-observe [socket {dist :n} {val :n :as observed} uuid]
   "This function is called when we hit an `observe` expression while
   evaluating our model. We need to inform the inference engine about
   the random variable being observed, and what value was observed. On
@@ -309,7 +305,7 @@
     (send-msg socket fbb)
 
     (receive-msg socket [MessageBody/ObserveResult])
-    [observed store]))
+    observed))
 
 (defn- run-result [socket val]
   "Returns a result `val` of evaluating the generative model. Sends a
@@ -366,6 +362,141 @@
     (construct-message fbb MessageBody/BackwardResult br)
     (send-msg socket fbb)))
 
+(defrecord lazy-evaluation-visitor [rho env sample-fn observe-fn])
+
+(defn- accept-coll [coll v]
+  (map #(accept % v) coll))
+
+(defn- with-env [new-vars {rho :rho env :env sample-fn :sample-fn observe-fn :observe-fn}]
+  "Extends the execution environment with `new-vars`, a map from
+  variable name to values (constant AST nodes)."
+  (lazy-evaluation-visitor. rho (merge env new-vars) sample-fn observe-fn))
+
+(extend-type lazy-evaluation-visitor
+  ast/visitor
+
+  (visit-constant [_ c]
+    c)
+
+  (visit-variable [{env :env} {name :name}]
+    ;; only variables contained in the evaluation environment are
+    ;; defined.  Referencing any other variable is an error indicating
+    ;; that the user attempted to use an undefined/unbound variable.
+    (when-not (contains? env name)
+      (utils/foppl-error (str "Error: Undefined variable: " name)))
+
+    (get env name))
+
+  (visit-literal-vector [v {es :es}]
+    (ast/literal-vector. (accept-coll es v)))
+
+  (visit-literal-map [v {es :es}]
+    (ast/literal-map. (accept-coll es v)))
+
+  (visit-procedure [v {name :name args :args e :e}]
+    (utils/foppl-error "Procedure definitions should not exist during evaluation-based inference"))
+
+  (visit-lambda [_ lambda]
+    lambda)
+
+  (visit-local-binding [v {bindings :bindings es :es}]
+    {:pre [(= (count bindings) 2) (= (count es) 1)]}
+
+    (let [ ;; find the name of the variable being bound, as well as the
+          ;; value.
+          bound-name (:name (first bindings))
+          bound-val (second bindings)
+
+          ;; reduce the bound value
+          c1 (accept bound-val v)
+
+          ;; extend the environment to bind the name to the reduced
+          ;; value
+          env-extension {bound-name c1}
+          e (first es)]
+      (accept e (with-env env-extension v))))
+
+  (visit-foreach [v {c :c bindings :bindings es :es}]
+    (utils/foppl-error "foreach expressions are not valid in HOPPL"))
+
+  (visit-loop [v {c :c e :e f :f es :es}]
+    (utils/foppl-error "loop expressions should have been desugared during evaluation-based inference"))
+
+  (visit-if-cond [v {predicate :predicate then :then else :else}]
+    (let [reduced-predicate (accept predicate v)]
+      (if (hoppl/to-clojure-value reduced-predicate)
+        (accept then v)
+        (accept else v))))
+
+  (visit-fn-application [{rho :rho env :env store :store :as v} {name :name args :args}]
+    (let [reduced-args (accept-coll args v)
+          clojure-args (map hoppl/to-clojure-value reduced-args)
+          builtin? #(contains? eval/all-builtins %)]
+
+      (cond
+        ;; if the function being applied is a user-defined procedure
+        ;; (or a builtin higher order function), we extend the
+        ;; environment with the function parameters being bound to the
+        ;; arguments passed, and recursively evaluate the expression
+        ;; contained in the procedure definition
+        (contains? rho name) (let [[param-names e] (get rho name)
+                                   env-extension (zipmap param-names reduced-args)]
+                               (accept e (with-env env-extension v)))
+
+        ;; in case the function being applied is a built-in,
+        ;; first-order function, we immediately apply it with the
+        ;; arguments given. The result should be a constant value.
+        (builtin? name) (ast/constant. (apply (eval/builtin-fn name) clojure-args))
+
+        ;; if the function being applied is in the evaluation context,
+        ;; it means it was defined as a lambda previously (no
+        ;; type-checking to ensure this is actually the case is
+        ;; performed).
+        ;;
+        ;; This case is similar to the user-defined procedure
+        ;; scenario. The value associated with the name in the
+        ;; evaluation environment is treated as a lambda AST node, the
+        ;; environment is extended with the lambda parameters being
+        ;; bound to the arguments passed, and the expression
+        ;; associated with the lambda is recursively evaluated.
+        (contains? env name) (let [{name :name params :args e :e} (get env name)
+                                   params-names (map :name params)
+                                   env-extension (zipmap params-names reduced-args)]
+                               (accept e (with-env env-extension v)))
+
+        :else (utils/foppl-error (str "Undefined function: " name)))))
+
+  (visit-sample [{store :store sample-fn :sample-fn :as v} {dist :dist uuid :uuid}]
+    ;; behavior is inference-algorithm specific. Invoke the
+    ;; `sample-fn` function passed to the visitor.
+    (let [reduced-dist (accept dist v)]
+      (sample-fn reduced-dist uuid)))
+
+  (visit-observe [{store :store observe-fn :observe-fn :as v} {dist :dist val :val uuid :uuid}]
+    ;; behavior is inference-algorithm specific. Invoke the
+    ;; `observe-fn` function passed to the visitor.
+    (let [reduced-dist (accept dist v)
+          reduced-val (accept val v)]
+      (observe-fn reduced-dist reduced-val uuid))))
+
+(defn- lazy-interpret [sample-fn observe-fn {defs :defs e :e}]
+  (let [;; procedure names of user-defined functions and higher-order
+        ;; builtins
+        procedure-names (map :name defs)
+        procedure-args (fn [{args :args}] (map :name args))
+        encode-procedure (fn [procedure] [(into [] (procedure-args procedure)) (:e procedure)])
+        encoded (map encode-procedure defs)
+
+        ;; the rho map is a map from procedure name to a tuple
+        ;; (vector) containing [list-of-variable-names expression]
+        rho (zipmap procedure-names encoded)
+
+        env {}
+
+        v (lazy-evaluation-visitor. rho env sample-fn observe-fn)]
+    (accept e v)))
+
+
 (defn perform
   "Performs waits for communication from some inference engine that
   implements the PPX protocol and controls the generative model
@@ -405,13 +536,14 @@
        ;; result back to the inference engine, and recur.
        (let [sample-fn (partial request-sample socket)
              observe-fn (partial request-observe socket)
+             interpreter (partial lazy-interpret sample-fn observe-fn)
              next-msg #(receive-msg socket [MessageBody/Run MessageBody/Forward MessageBody/Backward])]
          (loop [[type message] (next-msg)]
            (cond
              (= type MessageBody/Run) (do
                                         (logger "Running the model")
 
-                                        (let [[{val :n} _] (hoppl/forward program init-store sample-fn observe-fn)]
+                                        (let [{val :n} (hoppl/forward program interpreter)]
                                           (run-result socket val)))
 
              (= type MessageBody/Forward) (do
