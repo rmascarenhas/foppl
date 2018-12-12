@@ -3,7 +3,6 @@
             [foppl.utils :as utils]
             [foppl.hoppl :as hoppl]
             [foppl.autodiff :as autodiff]
-            [foppl.primitives :as primitives]
             [foppl.eval :as eval]
             [anglican.runtime :as anglican]
             [zeromq.zmq :as zmq])
@@ -359,6 +358,14 @@
 
     (apply grad-fn [args])))
 
+(defn- element-wise [f m1 m2]
+  (when-not (and (= (count m1) (count m2)) (= (count (first m1)) (count (first m2))))
+    (utils/foppl-error "Element-wise operations are only applicable in matrices of the same shape."))
+
+  (let [rows (count m1)
+        combine-row #(conj %1 (mapv f (nth m1 %2) (nth m2 %2)))]
+    (reduce combine-row [] (range 0 rows))))
+
 (defn- autograd-forward [socket name args]
   "Handles the forward passs in an automatic differentiation process."
 
@@ -375,7 +382,7 @@
 
   (let [backwards (matrix-map (comp first vals last (partial autograd-apply name)) args)
         fbb (FlatBufferBuilder. 64)
-        result (primitives/mat-mul grad-output backwards)
+        result (element-wise * backwards grad-output)
         output (tensor fbb result)
         br (construct-backward-result fbb output)]
 
