@@ -14,6 +14,10 @@
             Sample SampleResult Observe ObserveResult Forward ForwardResult
             Backward BackwardResult Distribution Uniform Normal Poisson Tensor]))
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;  java.math alias functions     ;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
 (defn- exp [n]
   "Alias for `Math/exp`. Since gradient functions are evaluated in the
   context of this namespace."
@@ -21,12 +25,21 @@
   (Math/exp n))
 
 (defn- log [n]
+  "Alias for `Math/log`. Since gradient functions are evaluated in the
+  context of this namespace."
+
   (Math/log n))
 
 (defn- sin [n]
+  "Alias for `Math/sin`. Since gradient functions are evaluated in the
+  context of this namespace."
+
   (Math/sin n))
 
 (defn- cos [n]
+  "Alias for `Math/cos`. Since gradient functions are evaluated in the
+  context of this namespace."
+
   (Math/cos n))
 
 ;; The TCP port we will be listening to, waiting for an inference
@@ -60,6 +73,8 @@
    :relu '(fn [n] (log (+ 1 (exp n))))
    :sigmoid '(fn [n] (/ 1 (+ 1 (exp (* -1 n)))))})
 
+;; maps function names to the gradient corresponding
+;; gradient-calculating functions.
 (def ^:private differentiable-functions
   (let [parse #(binding [*ns* (the-ns 'foppl.remote)]
                  (eval (autodiff/perform %)))]
@@ -128,7 +143,10 @@
     offset))
 
 (defn- matrix-map [f matrix]
-  (mapv #(do (mapv f %)) matrix))
+  "Given a matrix and a function `f`, this eagerly applies `f` to
+  every element in the matrix. Returns the resulting matrix."
+
+  (doall (mapv #(do (mapv f %)) matrix)))
 
 (defn- construct-sample [builder address name dist-type dist]
   "Given a FlatBufferBuilder, this will add a `Sample` table to the
@@ -195,7 +213,7 @@
 
   (let [ ;; tensors are encoded as collections of doubles
         doubles (matrix-map double data)
-        reversed (reverse (map reverse doubles))
+        reversed (doall (map rseq (rseq doubles)))
 
         ;; we also need the shape of the tensor
         shape [(count reversed) (count (first reversed))]
@@ -359,11 +377,20 @@
     (apply grad-fn [args])))
 
 (defn- element-wise [f m1 m2]
+  "Given two matrices `m1` and `m2` of the exact same dimensions, this
+  applies a function `f` that takes two arguments to every pair of
+  elements in the matrices. Returns the resulting matrix."
+
+  ;; make sure the two matrices are of the same size.
   (when-not (and (= (count m1) (count m2)) (= (count (first m1)) (count (first m2))))
     (utils/foppl-error "Element-wise operations are only applicable in matrices of the same shape."))
 
   (let [rows (count m1)
+
+        ;; given a row (index), this returns a vector where `f` has
+        ;; been applied on the that row in the two matrices.
         combine-row #(conj %1 (mapv f (nth m1 %2) (nth m2 %2)))]
+
     (reduce combine-row [] (range 0 rows))))
 
 (defn- autograd-forward [socket name args]
@@ -389,14 +416,21 @@
     (construct-message fbb MessageBody/BackwardResult br)
     (send-msg socket fbb)))
 
+;; `lazy-evaluation-visitor` lazily evaluates `sample` and `observe`
+;; expressions and batches operations at strict points (control flow
+;; and termination).
 (defrecord lazy-evaluation-visitor [rho env sample-fn observe-fn])
 
 (defn- accept-coll [coll v]
+  "Given a collection of AST nodes and a visitor `v`, this visits
+  every node in the collection and returns the resulting collection"
+
   (map #(accept % v) coll))
 
 (defn- with-env [new-vars {rho :rho env :env sample-fn :sample-fn observe-fn :observe-fn}]
   "Extends the execution environment with `new-vars`, a map from
   variable name to values (constant AST nodes)."
+
   (lazy-evaluation-visitor. rho (merge env new-vars) sample-fn observe-fn))
 
 (extend-type lazy-evaluation-visitor
