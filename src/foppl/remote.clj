@@ -3,6 +3,7 @@
             [foppl.utils :as utils]
             [foppl.hoppl :as hoppl]
             [foppl.autodiff :as autodiff]
+            [foppl.primitives :as primitives]
             [foppl.eval :as eval]
             [anglican.runtime :as anglican]
             [zeromq.zmq :as zmq])
@@ -19,6 +20,15 @@
   context of this namespace."
 
   (Math/exp n))
+
+(defn- log [n]
+  (Math/log n))
+
+(defn- sin [n]
+  (Math/sin n))
+
+(defn- cos [n]
+  (Math/cos n))
 
 ;; The TCP port we will be listening to, waiting for an inference
 ;; engine to contact us using PPX.
@@ -44,11 +54,20 @@
 ;; Map of differentiable functions provided by this remote PPX
 ;; server. Ideally, these should be read from a file, but they are
 ;; declared statically here for demonstration purposes.
-(def ^:private differentiable-functions
+(def ^:private differentiable-function-defs
   {:exp '(fn [x] (exp x))
    :sin '(fn [x] (sin x))
    :cos '(fn [x] (cos x))
-   :normpdf '(fn [x mu sigma] (normpdf x mu sigma))})
+   :relu '(fn [n] (log (+ 1 (exp n))))
+   :sigmoid '(fn [n] (/ 1 (+ 1 (exp (* -1 n)))))})
+
+(def ^:private differentiable-functions
+  (let [parse #(binding [*ns* (the-ns 'foppl.remote)]
+                 (eval (autodiff/perform %)))]
+
+    (reduce (fn [m [name tree]] (assoc m name (parse tree)))
+            {}
+            differentiable-function-defs)))
 
 (defn- create-zmq-socket []
   "Creates a zeromq TCP socket listening on all available interfaces
@@ -108,6 +127,9 @@
                  (. Message endMessage builder))]
     (.finish builder offset)
     offset))
+
+(defn- matrix-map [f matrix]
+  (mapv #(do (mapv f %)) matrix))
 
 (defn- construct-sample [builder address name dist-type dist]
   "Given a FlatBufferBuilder, this will add a `Sample` table to the
@@ -169,24 +191,25 @@
   "Given an array of data, this will add a `Tensor` table to the
   FlatBuffer passed. Returns the offset of the tensor in the buffer."
 
-  (when (seq? (first data))
-    (utils/foppl-error "Multidimensional tensors not supported"))
+  (when (coll? (first (first data)))
+    (utils/foppl-error "Only 2-dim tensors are supported"))
 
   (let [ ;; tensors are encoded as collections of doubles
-        doubles (map double data)
+        doubles (matrix-map double data)
+        reversed (reverse (map reverse doubles))
 
         ;; we also need the shape of the tensor
-        shape []
+        shape [(count reversed) (count (first reversed))]
 
         ;; create the data and shape vectors into the buffer.
         data-vec (do
-                   (. Tensor startDataVector builder (count data))
-                   (doall (map #(.addDouble builder %) doubles))
+                   (. Tensor startDataVector builder (apply * shape))
+                   (doall (matrix-map #(.addDouble builder %) reversed))
                    (.endVector builder))
 
         shape-vec (do
                     (. Tensor startShapeVector builder (count shape))
-                    (doall (map #(.addInt builder %) shape))
+                    (doall (map #(.addInt builder %) (reverse shape)))
                     (.endVector builder))]
 
     ;; finally, we can create the tensor in the flatbuffer.
@@ -202,11 +225,11 @@
   described in the `tensor` function apply (i.e., only 'scalars' are
   supported)"
 
-  (when-not (= (.shapeLength tensor) 1)
-    (utils/foppl-error "Multidimensional tensors not supported."))
-
-  (let [shape (.shapeLength tensor)]
-    (reduce #(conj %1 (.data tensor %2)) [] (range 0 shape))))
+  (let [rows (.shape tensor 0)
+        cols (.shape tensor 1)
+        matrix []
+        build-row (fn [i] (reduce #(conj %1 (.data tensor %2)) [] (range i (+ i cols))))]
+    (reduce (fn [m curr-row] (conj m (build-row (* curr-row cols)))) matrix (range 0 rows))))
 
 (defn- handle-handshake [socket handshake]
   "Returns this system's information back to the inference engine as a
@@ -330,21 +353,18 @@
   `differentiable-functions`, this will throw an exception. Returns a
   vector of the form `[function-result, gradient-wrt-each-parameter]`"
 
-  (let [f (doto (get differentiable-functions (keyword name))
-            (when-not
-                (utils/foppl-error (str "Unknown differentiable function: " name))))
+  (let [grad-fn (doto (get differentiable-functions (keyword name))
+                  (when-not
+                      (utils/foppl-error (str "Unknown differentiable function: " name))))]
 
-        grad-fn (binding [*ns* (the-ns 'foppl.remote)]
-                  (eval (autodiff/perform f)))]
-
-    (apply grad-fn args)))
+    (apply grad-fn [args])))
 
 (defn- autograd-forward [socket name args]
   "Handles the forward passs in an automatic differentiation process."
 
-  (let [[forward _] (autograd-apply name args)
+  (let [forwards (matrix-map (comp first (partial autograd-apply name)) args)
         fbb (FlatBufferBuilder. 64)
-        result (tensor fbb [forward])
+        result (tensor fbb forwards)
         fr (construct-forward-result fbb result)]
 
     (construct-message fbb MessageBody/ForwardResult fr)
@@ -353,10 +373,10 @@
 (defn- autograd-backward [socket name args grad-output]
   "Handles the backward pass in an automatic differentiation process."
 
-  (let [[_ backward] (autograd-apply name args)
+  (let [backwards (matrix-map (comp first vals last (partial autograd-apply name)) args)
         fbb (FlatBufferBuilder. 64)
-        result (* (first grad-output) (first (vals backward)))
-        output (tensor fbb [result])
+        result (primitives/mat-mul grad-output backwards)
+        output (tensor fbb result)
         br (construct-backward-result fbb output)]
 
     (construct-message fbb MessageBody/BackwardResult br)
@@ -547,11 +567,11 @@
                                           (run-result socket val)))
 
              (= type MessageBody/Forward) (do
-                                            (logger "Calculating gradient (forward)")
+                                            (logger "Calculating" (.name message) "gradient (forward)")
                                             (autograd-forward socket (.name message) (tensor-to-seq (.input message))))
 
              (= type MessageBody/Backward) (do
-                                             (logger "Calculating gradient (backward)")
+                                             (logger "Calculating" (.name message) "gradient (backward)")
                                              (autograd-backward socket
                                                                 (.name message)
                                                                 (tensor-to-seq (.input message))
