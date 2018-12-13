@@ -208,33 +208,36 @@
   "Given an array of data, this will add a `Tensor` table to the
   FlatBuffer passed. Returns the offset of the tensor in the buffer."
 
-  (when (coll? (first (first data)))
-    (utils/foppl-error "Only 2-dim tensors are supported"))
+  (let [one-dim? (and (coll? data) (not (coll? (first data))))
+        two-dim? (and (coll? data) (coll? (first data)) (not (coll? (first (first data)))))]
+    (when-not (or one-dim? two-dim?)
+      (utils/foppl-error "Only 1- or 2-dim tensors are supported"))
 
-  (let [ ;; tensors are encoded as collections of doubles
-        doubles (matrix-map double data)
-        reversed (doall (map rseq (rseq doubles)))
+    (let [ ;; tensors are encoded as collections of doubles
+          map-fn (if one-dim? mapv matrix-map)
+          doubles (map-fn double data)
+          reversed (doall (if one-dim? (rseq doubles) (map rseq (rseq doubles))))
 
-        ;; we also need the shape of the tensor
-        shape [(count reversed) (count (first reversed))]
+          ;; we also need the shape of the tensor
+          shape (if one-dim? [(count reversed)] [(count reversed) (count (first reversed))])
 
-        ;; create the data and shape vectors into the buffer.
-        data-vec (do
-                   (. Tensor startDataVector builder (apply * shape))
-                   (doall (matrix-map #(.addDouble builder %) reversed))
-                   (.endVector builder))
+          ;; create the data and shape vectors into the buffer.
+          data-vec (do
+                     (. Tensor startDataVector builder (apply * shape))
+                     (doall (map-fn #(.addDouble builder %) reversed))
+                     (.endVector builder))
 
-        shape-vec (do
-                    (. Tensor startShapeVector builder (count shape))
-                    (doall (map #(.addInt builder %) (reverse shape)))
-                    (.endVector builder))]
+          shape-vec (do
+                      (. Tensor startShapeVector builder (count shape))
+                      (doall (map #(.addInt builder %) (reverse shape)))
+                      (.endVector builder))]
 
-    ;; finally, we can create the tensor in the flatbuffer.
-    (do
-      (. Tensor startTensor builder)
-      (. Tensor addData builder data-vec)
-      (. Tensor addShape builder shape-vec)
-      (. Tensor endTensor builder))))
+      ;; finally, we can create the tensor in the flatbuffer.
+      (do
+        (. Tensor startTensor builder)
+        (. Tensor addData builder data-vec)
+        (. Tensor addShape builder shape-vec)
+        (. Tensor endTensor builder)))))
 
 (defn- tensor-to-seq [tensor]
   "Transforms a `Tensor` received from the inference engine back into
@@ -287,7 +290,7 @@
 
       :else (utils/foppl-error (str "Unsupported distribution: " (class dist))))))
 
-(defn- request-sample [socket {dist :n} uuid]
+(defn- request-sample [socket {dist :n} uuid env resolved pending]
   "Function called when a `sample` expression is found (during
   evaluation-based inference). Since this language is delegating all
   inference tasks to the inference engine via PPX, this function only
@@ -318,14 +321,14 @@
     ;; the evaluation module and proceed.
     (let [[_ sample-result] (receive-msg socket [MessageBody/SampleResult])
           result (.result sample-result)
-          value (tensor-to-seq result)]
+          value (first (tensor-to-seq result))]
 
       (when-not (= (count value) 1)
         (utils/foppl-error (str "Sampled values should be scalars, got:" value)))
 
-      (ast/constant. (first value)))))
+      [(ast/constant. (first value)) env resolved pending])))
 
-(defn- request-observe [socket {dist :n} {val :n :as observed} uuid]
+(defn- request-observe [socket {dist :n} {val :n :as observed} uuid env resolved pending]
   "This function is called when we hit an `observe` expression while
   evaluating our model. We need to inform the inference engine about
   the random variable being observed, and what value was observed. On
@@ -345,7 +348,7 @@
     (send-msg socket fbb)
 
     (receive-msg socket [MessageBody/ObserveResult])
-    observed))
+    [observed env resolved pending]))
 
 (defn- run-result [socket val]
   "Returns a result `val` of evaluating the generative model. Sends a
@@ -416,49 +419,69 @@
     (construct-message fbb MessageBody/BackwardResult br)
     (send-msg socket fbb)))
 
+(defrecord thunk [id type args])
+
 ;; `lazy-evaluation-visitor` lazily evaluates `sample` and `observe`
 ;; expressions and batches operations at strict points (control flow
 ;; and termination).
-(defrecord lazy-evaluation-visitor [rho env sample-fn observe-fn])
+(defrecord lazy-evaluation-visitor [rho env resolved pending sample-fn observe-fn])
 
-(defn- accept-coll [coll v]
-  "Given a collection of AST nodes and a visitor `v`, this visits
-  every node in the collection and returns the resulting collection"
-
-  (map #(accept % v) coll))
-
-(defn- with-env [new-vars {rho :rho env :env sample-fn :sample-fn observe-fn :observe-fn}]
+(defn- with-env [new-vars {rho :rho env :env resolved :resolved pending :pending sample-fn :sample-fn observe-fn :observe-fn}]
   "Extends the execution environment with `new-vars`, a map from
   variable name to values (constant AST nodes)."
 
-  (lazy-evaluation-visitor. rho (merge env new-vars) sample-fn observe-fn))
+  (lazy-evaluation-visitor. rho (merge env new-vars) resolved pending sample-fn observe-fn))
+
+(defn- with-resolved [new-resolved {rho :rho env :env resolved :resolved pending :pending sample-fn :sample-fn observe-fn :observe-fn}]
+  "Extends the execution environment with `new-resolved`, a map from
+  thunk identifiers to values."
+
+  (lazy-evaluation-visitor. rho env (merge resolved new-resolved) pending sample-fn observe-fn))
+
+(defn- with-pending [new-pending {rho :rho env :env resolved :resolved pending :pending sample-fn :sample-fn observe-fn :observe-fn}]
+  "Extends the execution environment with `new-pending`, a vector of
+  thunks to be executed later.."
+
+  (lazy-evaluation-visitor. rho env resolved new-pending sample-fn observe-fn))
+
+(defn- eval-coll [es {env :env resolved :resolved pending :pending :as v}]
+  (let [visit-expression (fn [[es-coll current-env current-resolved current-pending] e]
+                           (let [visitor (->> v
+                                              (with-env current-env)
+                                              (with-resolved current-resolved)
+                                              (with-pending current-pending))
+                                 [reduced-e new-env new-resolved new-pending] (accept e visitor)]
+                             [(conj es-coll reduced-e) new-env new-resolved new-pending]))]
+    (reduce visit-expression [[] env resolved pending] es)))
 
 (extend-type lazy-evaluation-visitor
   ast/visitor
 
-  (visit-constant [_ c]
-    c)
+  (visit-constant [{env :env resolved :resolved pending :pending} c]
+    [c env resolved pending])
 
-  (visit-variable [{env :env} {name :name}]
+  (visit-variable [{env :env resolved :resolved pending :pending} {name :name}]
     ;; only variables contained in the evaluation environment are
     ;; defined.  Referencing any other variable is an error indicating
     ;; that the user attempted to use an undefined/unbound variable.
     (when-not (contains? env name)
       (utils/foppl-error (str "Error: Undefined variable: " name)))
 
-    (get env name))
+    [(get env name) env resolved pending])
 
   (visit-literal-vector [v {es :es}]
-    (ast/literal-vector. (accept-coll es v)))
+    (let [[reduced-es new-env new-resolved new-pending] (eval-coll es v)]
+      [(ast/literal-vector. reduced-es) new-env new-resolved new-pending]))
 
   (visit-literal-map [v {es :es}]
-    (ast/literal-map. (accept-coll es v)))
+    (let [[reduced-es new-env new-resolved new-pending] (eval-coll es v)]
+      [(ast/literal-map. reduced-es) new-env new-resolved new-pending]))
 
   (visit-procedure [v {name :name args :args e :e}]
     (utils/foppl-error "Procedure definitions should not exist during evaluation-based inference"))
 
-  (visit-lambda [_ lambda]
-    lambda)
+  (visit-lambda [{env :env resolved :resolved pending :pending} lambda]
+    [lambda env resolved pending])
 
   (visit-local-binding [v {bindings :bindings es :es}]
     {:pre [(= (count bindings) 2) (= (count es) 1)]}
@@ -469,13 +492,19 @@
           bound-val (second bindings)
 
           ;; reduce the bound value
-          c1 (accept bound-val v)
+          [c1 new-env new-resolved new-pending] (accept bound-val v)
 
           ;; extend the environment to bind the name to the reduced
           ;; value
           env-extension {bound-name c1}
-          e (first es)]
-      (accept e (with-env env-extension v))))
+          e (first es)
+
+          visitor (->> v
+                       (with-env env-extension)
+                       (with-resolved new-resolved)
+                       (with-pending new-pending))]
+
+      (accept e visitor)))
 
   (visit-foreach [v {c :c bindings :bindings es :es}]
     (utils/foppl-error "foreach expressions are not valid in HOPPL"))
@@ -484,15 +513,23 @@
     (utils/foppl-error "loop expressions should have been desugared during evaluation-based inference"))
 
   (visit-if-cond [v {predicate :predicate then :then else :else}]
-    (let [reduced-predicate (accept predicate v)]
+    (let [[reduced-predicate new-env new-resolved new-pending] (accept predicate v)
+          visitor (->> v
+                       (with-env new-env)
+                       (with-resolved new-resolved)
+                       (with-pending new-pending))]
       (if (hoppl/to-clojure-value reduced-predicate)
-        (accept then v)
-        (accept else v))))
+        (accept then visitor)
+        (accept else visitor))))
 
   (visit-fn-application [{rho :rho env :env store :store :as v} {name :name args :args}]
-    (let [reduced-args (accept-coll args v)
+    (let [[reduced-args new-env new-resolved new-pending] (eval-coll args v)
           clojure-args (map hoppl/to-clojure-value reduced-args)
-          builtin? #(contains? eval/all-builtins %)]
+          builtin? #(contains? eval/all-builtins %)
+          visitor (->> v
+                       (with-env new-env)
+                       (with-resolved new-resolved)
+                       (with-pending new-pending))]
 
       (cond
         ;; if the function being applied is a user-defined procedure
@@ -502,12 +539,12 @@
         ;; contained in the procedure definition
         (contains? rho name) (let [[param-names e] (get rho name)
                                    env-extension (zipmap param-names reduced-args)]
-                               (accept e (with-env env-extension v)))
+                               (accept e (with-env env-extension visitor)))
 
         ;; in case the function being applied is a built-in,
         ;; first-order function, we immediately apply it with the
         ;; arguments given. The result should be a constant value.
-        (builtin? name) (ast/constant. (apply (eval/builtin-fn name) clojure-args))
+        (builtin? name) [(ast/constant. (apply (eval/builtin-fn name) clojure-args)) new-env new-resolved new-pending]
 
         ;; if the function being applied is in the evaluation context,
         ;; it means it was defined as a lambda previously (no
@@ -523,22 +560,31 @@
         (contains? env name) (let [{name :name params :args e :e} (get env name)
                                    params-names (map :name params)
                                    env-extension (zipmap params-names reduced-args)]
-                               (accept e (with-env env-extension v)))
+                               (accept e (with-env env-extension visitor)))
 
         :else (utils/foppl-error (str "Undefined function: " name)))))
 
-  (visit-sample [{store :store sample-fn :sample-fn :as v} {dist :dist uuid :uuid}]
+  (visit-sample [{sample-fn :sample-fn :as v} {dist :dist uuid :uuid}]
     ;; behavior is inference-algorithm specific. Invoke the
     ;; `sample-fn` function passed to the visitor.
-    (let [reduced-dist (accept dist v)]
-      (sample-fn reduced-dist uuid)))
+    (let [[reduced-dist new-env new-resolved new-pending] (accept dist v)]
+      (sample-fn reduced-dist uuid new-env new-resolved new-pending)))
 
-  (visit-observe [{store :store observe-fn :observe-fn :as v} {dist :dist val :val uuid :uuid}]
+  (visit-observe [{observe-fn :observe-fn :as v} {dist :dist val :val uuid :uuid}]
     ;; behavior is inference-algorithm specific. Invoke the
     ;; `observe-fn` function passed to the visitor.
-    (let [reduced-dist (accept dist v)
-          reduced-val (accept val v)]
-      (observe-fn reduced-dist reduced-val uuid))))
+    (let [[reduced-dist env' resolved' pending'] (accept dist v)
+          val-visitor (->> v
+                           (with-env env')
+                           (with-resolved resolved')
+                           (with-pending pending'))
+          [reduced-val new-env new-resolved new-pending] (accept val val-visitor)]
+      (observe-fn reduced-dist reduced-val uuid new-env new-resolved new-pending))))
+
+(defn- lazy-sample [{dist :n} {val :n} uuid env resolved pending]
+  (thunk. (ast/fresh-sym "thunk-sample") :sample [dist val uuid]))
+
+(defn- lazy-observe [{dist :n} {val :n} uuid env resolved pending])
 
 (defn- lazy-interpret [sample-fn observe-fn {defs :defs e :e}]
   (let [;; procedure names of user-defined functions and higher-order
@@ -552,9 +598,16 @@
         ;; (vector) containing [list-of-variable-names expression]
         rho (zipmap procedure-names encoded)
 
+        ;; the evaluation environment initially starts empty
         env {}
 
-        v (lazy-evaluation-visitor. rho env sample-fn observe-fn)]
+        ;; at first, no pending expressions have been resolved
+        resolved {}
+
+        ;; at first, no expression is pending
+        pending []
+
+        v (lazy-evaluation-visitor. rho env resolved pending sample-fn observe-fn)]
     (accept e v)))
 
 
@@ -597,14 +650,15 @@
        ;; result back to the inference engine, and recur.
        (let [sample-fn (partial request-sample socket)
              observe-fn (partial request-observe socket)
-             interpreter (partial lazy-interpret sample-fn observe-fn)
+             eager-interpreter (partial lazy-interpret sample-fn observe-fn)
+             lazy-interpreter (partial lazy-interpret lazy-sample lazy-observe)
              next-msg #(receive-msg socket [MessageBody/Run MessageBody/Forward MessageBody/Backward])]
          (loop [[type message] (next-msg)]
            (cond
              (= type MessageBody/Run) (do
                                         (logger "Running the model")
 
-                                        (let [{val :n} (hoppl/forward program interpreter)]
+                                        (let [[{val :n} *] (hoppl/forward program eager-interpreter)]
                                           (run-result socket val)))
 
              (= type MessageBody/Forward) (do
