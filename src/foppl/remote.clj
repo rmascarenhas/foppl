@@ -579,10 +579,15 @@
           [reduced-val new-env new-resolved new-pending] (accept val val-visitor)]
       (observe-fn reduced-dist reduced-val uuid new-env new-resolved new-pending))))
 
-(defn- lazy-sample [{dist :n} {val :n} uuid env resolved pending]
-  (ast/thunk. (ast/fresh-sym "thunk-sample") :sample [dist val uuid]))
+(defn- lazy-sample [dist uuid env resolved pending]
+  (let [thunk (ast/thunk. (ast/fresh-sym "thunk-sample") :sample [dist uuid])
+        new-pending (conj pending thunk)]
+    [thunk env resolved new-pending]))
 
-(defn- lazy-observe [{dist :n} {val :n} uuid env resolved pending])
+(defn- lazy-observe [dist val uuid env resolved pending]
+  (let [thunk (ast/thunk. (ast/fresh-sym "thunk-observe") :observe) [dist val uuid]
+        new-pending (conj pending thunk)]
+    [thunk env resolve new-pending]))
 
 (defn- lazy-interpret [sample-fn observe-fn {defs :defs e :e}]
   (let [;; procedure names of user-defined functions and higher-order
