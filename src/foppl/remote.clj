@@ -12,7 +12,8 @@
            [java.nio ByteBuffer]
            [ppx Handshake HandshakeResult Message MessageBody Run RunResult
             Sample SampleResult Observe ObserveResult Forward ForwardResult
-            Backward BackwardResult Distribution Uniform Normal Poisson Tensor]))
+            Backward BackwardResult Distribution Uniform Normal Poisson
+            Tensor BatchOperation BatchOperationResult]))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;  java.math alias functions     ;;
@@ -61,7 +62,8 @@
    MessageBody/SampleResult #(SampleResult.)
    MessageBody/ObserveResult #(ObserveResult.)
    MessageBody/Forward #(Forward.)
-   MessageBody/Backward #(Backward.)})
+   MessageBody/Backward #(Backward.)
+   MessageBody/BatchOperationResult #(BatchOperationResult.)})
 
 ;; Map of differentiable functions provided by this remote PPX
 ;; server. Ideally, these should be read from a file, but they are
@@ -128,19 +130,24 @@
   the network."
   (zmq/send socket (.sizedByteArray builder)))
 
-(defn- construct-message [builder type body]
+(defn- construct-message
   "Given a FlatBufferBuilder and a message type and body, this will
   update the builder to include the actual message to be sent over the
   network. Adding to the buffer after this function is called will
   result in a runtime error."
 
-  (let [offset (do
-                 (. Message startMessage builder)
-                 (. Message addBodyType builder type)
-                 (. Message addBody builder body)
-                 (. Message endMessage builder))]
-    (.finish builder offset)
-    offset))
+  ([builder type body]
+   (construct-message builder type body true))
+
+  ([builder type body finish]
+   (let [offset (do
+                  (. Message startMessage builder)
+                  (. Message addBodyType builder type)
+                  (. Message addBody builder body)
+                  (. Message endMessage builder))]
+     (when finish
+       (.finish builder offset))
+     offset)))
 
 (defn- matrix-map [f matrix]
   "Given a matrix and a function `f`, this eagerly applies `f` to
@@ -249,7 +256,9 @@
         cols (.shape tensor 1)
         matrix []
         build-row (fn [i] (reduce #(conj %1 (.data tensor %2)) [] (range i (+ i cols))))]
-    (reduce (fn [m curr-row] (conj m (build-row (* curr-row cols)))) matrix (range 0 rows))))
+    (if (= (.shapeLength tensor) 1)
+      (build-row 0)
+      (reduce (fn [m curr-row] (conj m (build-row (* curr-row cols)))) matrix (range 0 rows)))))
 
 (defn- handle-handshake [socket handshake]
   "Returns this system's information back to the inference engine as a
@@ -290,6 +299,26 @@
 
       :else (utils/foppl-error (str "Unsupported distribution: " (class dist))))))
 
+(defn- sample-table [builder dist uuid]
+  (let [address (.createString builder uuid)
+        name (.createString builder "")
+
+        ;; computes the distribution type and adds the distribution
+        ;; object to the flatbuffer object.
+        [dist-type dist] (fill-distribution builder dist)]
+
+    ;; construct a sample table in the flatbuffer
+    (construct-sample builder address name dist-type dist)))
+
+(defn- observe-table [builder dist val uuid]
+  (let [address (.createString builder uuid)
+        name (.createString builder "")
+
+        [dist-type dist] (fill-distribution builder dist)
+        observed (tensor builder [val])]
+
+    (construct-observe builder address name dist-type dist observed)))
+
 (defn- request-sample [socket {dist :n} uuid env resolved pending]
   "Function called when a `sample` expression is found (during
   evaluation-based inference). Since this language is delegating all
@@ -300,15 +329,7 @@
   corresponding random variable."
 
   (let [fbb (FlatBufferBuilder. 64)
-        address (.createString fbb uuid)
-        name (.createString fbb "")
-
-        ;; computes the distribution type and adds the distribution
-        ;; object to the flatbuffer object.
-        [dist-type dist] (fill-distribution fbb dist)
-
-        ;; construct a sample table in the flatbuffer
-        sample (construct-sample fbb address name dist-type dist)]
+        sample (sample-table fbb dist uuid)]
 
     ;; build a `Sample` message with the data computed above --
     ;; inference engine is going to sample for us and return a result.
@@ -337,12 +358,7 @@
   although this is not relevant for this remote inference scenario."
 
   (let [fbb (FlatBufferBuilder. 64)
-        address (.createString fbb uuid)
-        name (.createString fbb "")
-
-        [dist-type dist] (fill-distribution fbb dist)
-        observed (tensor fbb [val])
-        observe (construct-observe fbb address name dist-type dist observed)]
+        observe (observe-table fbb dist val uuid)]
 
     (construct-message fbb MessageBody/Observe observe)
     (send-msg socket fbb)
@@ -422,33 +438,116 @@
 ;; `lazy-evaluation-visitor` lazily evaluates `sample` and `observe`
 ;; expressions and batches operations at strict points (control flow
 ;; and termination).
-(defrecord lazy-evaluation-visitor [rho env resolved pending sample-fn observe-fn])
+(defrecord lazy-evaluation-visitor [rho env resolved pending sample-fn observe-fn realize-fn])
 
-(defn- with-env [new-vars {rho :rho env :env resolved :resolved pending :pending sample-fn :sample-fn observe-fn :observe-fn}]
+(defn- with-env [new-vars {rho :rho env :env resolved :resolved pending :pending sample-fn :sample-fn observe-fn :observe-fn realize-fn :realize-fn}]
   "Extends the execution environment with `new-vars`, a map from
   variable name to values (constant AST nodes)."
 
-  (lazy-evaluation-visitor. rho (merge env new-vars) resolved pending sample-fn observe-fn))
+  (lazy-evaluation-visitor. rho (merge env new-vars) resolved pending sample-fn observe-fn realize-fn))
 
-(defn- with-resolved [new-resolved {rho :rho env :env resolved :resolved pending :pending sample-fn :sample-fn observe-fn :observe-fn}]
+(defn- with-resolved [new-resolved {rho :rho env :env resolved :resolved pending :pending sample-fn :sample-fn observe-fn :observe-fn realize-fn :realize-fn}]
   "Extends the execution environment with `new-resolved`, a map from
   thunk identifiers to values."
 
-  (lazy-evaluation-visitor. rho env (merge resolved new-resolved) pending sample-fn observe-fn))
+  (lazy-evaluation-visitor. rho env (merge resolved new-resolved) pending sample-fn observe-fn realize-fn))
 
-(defn- with-pending [new-pending {rho :rho env :env resolved :resolved pending :pending sample-fn :sample-fn observe-fn :observe-fn}]
+(defn- with-pending [new-pending {rho :rho env :env resolved :resolved pending :pending sample-fn :sample-fn observe-fn :observe-fn realize-fn :realize-fn}]
   "Extends the execution environment with `new-pending`, a vector of
   thunks to be executed later.."
 
-  (lazy-evaluation-visitor. rho env resolved new-pending sample-fn observe-fn))
+  (lazy-evaluation-visitor. rho env resolved new-pending sample-fn observe-fn realize-fn))
 
 (defn- thunk? [node]
   "Returns whether the AST node given is a deferred
   computation (instance of `foppl.remote.thunk`)."
   (= (class node) thunk))
 
-(defn- realize [id pending]
-  (utils/ice "Not implemented: realize"))
+(defn- request-batch [socket operations]
+  (let [functions (filter #(= :fn (:type %)) operations)
+        function-ids (map :id functions)
+        apply-function #(let [name (first (:args %))
+                              args (rest (:args %))
+                              clojure-args (map hoppl/to-clojure-value args)
+                              builtin? (contains? eval/all-builtins name)]
+
+                          (when-not builtin?
+                            (utils/foppl-error (str "Only deferred execution of builtin functions supported currently, got: " name)))
+                          (ast/constant. (apply (eval/builtin-fn name) clojure-args)))
+
+        concrete-functions (zipmap function-ids (map apply-function functions))
+
+        fbb (FlatBufferBuilder. 64)
+        needs-inference (filter #(or (= :sample (:type %)) (= :observe (:type %))) operations)
+        to-message #(let [type (:type %)
+                          args (:args %)]
+                      (cond
+                        (= type :sample) (let [table (sample-table fbb (:n (first args)) (last args))]
+                                           (construct-message fbb MessageBody/Sample table false))
+
+                        (= type :observe) (let [table (observe-table fbb (:n (first args)) (:n (second args)) (last args))]
+                                            (construct-message fbb MessageBody/Observe table false))
+
+                        :else (utils/ice (str "Only sample and observe can be transformed to messages, got: " type))))
+
+        messages (map to-message needs-inference)
+        ops-vec (. BatchOperation createOperationsVector fbb (int-array messages))
+        ops (do
+              (. BatchOperation startBatchOperation fbb)
+              (. BatchOperation addOperations fbb ops-vec)
+              (. BatchOperation endBatchOperation fbb))]
+
+    (if (empty? needs-inference)
+      ;; no sample or observe expressions in this set of operations --
+      ;; return the concrete values of functions computed above.
+      concrete-functions
+
+      ;; at least one expression needs to be resolved with the remote
+      ;; inference engine -- build a batch operation request and
+      ;; return the resolved values.
+      (do
+        (construct-message fbb MessageBody/BatchOperation ops)
+        (send-msg socket fbb)
+
+        (let [[_ batch-response] (receive-msg socket [MessageBody/BatchOperationResult])
+              response-messages (map #(.results batch-response %) (range 0 (count needs-inference)))
+              to-ast #(let [type (.bodyType %)]
+                        (cond
+                          (= type MessageBody/SampleResult) (let [obj ((get message-type-to-class MessageBody/SampleResult))
+                                                                  sample-result (.body % obj)
+                                                                  val (first (tensor-to-seq (.result sample-result)))]
+                                                              (ast/constant. val))
+
+                          (= type MessageBody/ObserveResult) (ast/constant. 0)
+
+                          :else (utils/ice (str "Unrecognized body type: " type))))
+
+              inferred-names (map :id needs-inference)
+              inferred-vals (map to-ast response-messages)
+              inferred-map (zipmap inferred-names inferred-vals)]
+
+          (merge concrete-functions inferred-map))))))
+
+(defn- realize
+  ([socket id pending]
+   (realize socket id pending {}))
+
+  ([socket id pending intermediate]
+   (let [resolved-pending (map (fn [{id :id type :type args :args}]
+                                 (let [new-args (map #(if (and (thunk? %) (contains? intermediate (:id %)))
+                                                        (get intermediate (:id %))
+                                                        %) args)]
+                                   (ast/thunk. id type new-args))) pending)
+         concrete? #(not (thunk? %))
+         realizable? #(every? concrete? (:args %))
+         realizability (group-by realizable? resolved-pending)
+         values (request-batch socket (get realizability true))
+         resolved (merge intermediate values)]
+
+     (if (empty? pending)
+       [(get resolved id) resolved pending]
+
+       (recur socket id (get realizability false) resolved)))))
 
 (defn- eval-coll [es {env :env resolved :resolved pending :pending :as v}]
   (let [visit-expression (fn [[es-coll current-env current-resolved current-pending] e]
@@ -473,7 +572,16 @@
     (when-not (contains? env name)
       (utils/foppl-error (str "Error: Undefined variable: " name)))
 
-    [(get env name) env resolved pending])
+    (let [value (get env name)
+
+          ;; if the value in the execution environment is a thunk and
+          ;; it is resolved, return the resolved value; otherwise,
+          ;; return the thunk itself.
+          concrete (if (and (thunk? value) (contains? resolved (:id value)))
+                     (get resolved (:id value))
+                     value)]
+
+      [concrete env resolved pending]))
 
   (visit-literal-vector [v {es :es}]
     (let [[reduced-es new-env new-resolved new-pending] (eval-coll es v)]
@@ -521,13 +629,13 @@
   (visit-loop [v {c :c e :e f :f es :es}]
     (utils/foppl-error "loop expressions should have been desugared during evaluation-based inference"))
 
-  (visit-if-cond [v {predicate :predicate then :then else :else}]
+  (visit-if-cond [{realize-fn :realize-fn :as v} {predicate :predicate then :then else :else}]
     (let [[reduced-predicate new-env new-resolved new-pending] (accept predicate v)
           [concrete-predicate realizations pending] (if (thunk? reduced-predicate)
                                                       ;; the predicate is deferred -- we need to perform as many
                                                       ;; operations as necessary to get a concrete value and proceed
                                                       ;; with evaluation.
-                                                      (realize (:id reduced-predicate) new-pending)
+                                                      (realize-fn (:id reduced-predicate) new-pending)
 
                                                       ;; the predicate is realized -- proceed with evaluation
                                                       [(hoppl/to-clojure-value reduced-predicate) {} new-pending])
@@ -548,7 +656,7 @@
       (if defer?
         ;; one of the function's argument is deferred -- defer the
         ;; entire function and add a thunk to the pending list.
-        (let [thunk (thunk. (ast/fresh-sym "thunk-fn") :fn reduced-args)]
+        (let [thunk (thunk. (ast/fresh-sym "thunk-fn") :fn (cons name reduced-args))]
           [thunk new-env new-resolved (conj new-pending thunk)])
 
         ;; all of the arguments are realized -- apply the function
@@ -618,9 +726,9 @@
 (defn- lazy-observe [dist val uuid env resolved pending]
   (let [thunk (ast/thunk. (ast/fresh-sym "thunk-observe") :observe [dist val uuid])
         new-pending (conj pending thunk)]
-    [thunk env resolve new-pending]))
+    [thunk env resolved new-pending]))
 
-(defn- lazy-interpret [sample-fn observe-fn {defs :defs e :e}]
+(defn- lazy-interpret [sample-fn observe-fn realize-fn {defs :defs e :e}]
   (let [;; procedure names of user-defined functions and higher-order
         ;; builtins
         procedure-names (map :name defs)
@@ -641,10 +749,10 @@
         ;; at first, no expression is pending
         pending []
 
-        v (lazy-evaluation-visitor. rho env resolved pending sample-fn observe-fn)]
+        v (lazy-evaluation-visitor. rho env resolved pending sample-fn observe-fn realize-fn)]
     (accept e v)))
 
-(defn- forward [program interpreter]
+(defn- forward [program interpreter realize-fn]
   "Runs the program under the given `interpreter`. If the resulting
   expressing is a thunk, makes external calls to the inference engine
   until the final value is returned."
@@ -655,7 +763,7 @@
       ;; if the evaluation result is a thunk, concretize pending
       ;; operations to get the final result (first element in the
       ;; vector returned by `realize`)
-      (first (realize (:id result) pending))
+      (first (realize-fn (:id result) pending))
 
       ;; otherwise, return the result iself
       result)))
@@ -699,15 +807,16 @@
        ;; result back to the inference engine, and recur.
        (let [sample-fn (partial request-sample socket)
              observe-fn (partial request-observe socket)
-             eager-interpreter (partial lazy-interpret sample-fn observe-fn)
-             lazy-interpreter (partial lazy-interpret lazy-sample lazy-observe)
+             realize-fn (partial realize socket)
+             eager-interpreter (partial lazy-interpret sample-fn observe-fn identity)
+             lazy-interpreter (partial lazy-interpret lazy-sample lazy-observe realize-fn)
              next-msg #(receive-msg socket [MessageBody/Run MessageBody/Forward MessageBody/Backward])]
          (loop [[type message] (next-msg)]
            (cond
              (= type MessageBody/Run) (do
                                         (logger "Running the model")
 
-                                        (let [{val :n} (forward program eager-interpreter)]
+                                        (let [{val :n} (forward program lazy-interpreter realize-fn)]
                                           (run-result socket val)))
 
              (= type MessageBody/Forward) (do
