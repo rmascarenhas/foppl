@@ -19,9 +19,11 @@ public final class MessageBody {
   public static final byte ForwardResult = 12;
   public static final byte Backward = 13;
   public static final byte BackwardResult = 14;
-  public static final byte Reset = 15;
+  public static final byte BatchOperation = 15;
+  public static final byte BatchOperationResult = 16;
+  public static final byte Reset = 17;
 
-  public static final String[] names = { "NONE", "Handshake", "HandshakeResult", "Run", "RunResult", "Sample", "SampleResult", "Observe", "ObserveResult", "Tag", "TagResult", "Forward", "ForwardResult", "Backward", "BackwardResult", "Reset", };
+  public static final String[] names = { "NONE", "Handshake", "HandshakeResult", "Run", "RunResult", "Sample", "SampleResult", "Observe", "ObserveResult", "Tag", "TagResult", "Forward", "ForwardResult", "Backward", "BackwardResult", "BatchOperation", "BatchOperationResult", "Reset", };
 
   public static String name(int e) { return names[e]; }
 }
