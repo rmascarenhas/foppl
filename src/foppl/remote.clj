@@ -442,6 +442,14 @@
 
   (lazy-evaluation-visitor. rho env resolved new-pending sample-fn observe-fn))
 
+(defn- thunk? [node]
+  "Returns whether the AST node given is a deferred
+  computation (instance of `foppl.remote.thunk`)."
+  (= (class node) thunk))
+
+(defn- realize [id pending]
+  (utils/ice "Not implemented: realize"))
+
 (defn- eval-coll [es {env :env resolved :resolved pending :pending :as v}]
   (let [visit-expression (fn [[es-coll current-env current-resolved current-pending] e]
                            (let [visitor (->> v
@@ -481,6 +489,9 @@
   (visit-lambda [{env :env resolved :resolved pending :pending} lambda]
     [lambda env resolved pending])
 
+  (visit-thunk [{env :env resolved :resolved pending :pending} thunk]
+    [thunk env resolved pending])
+
   (visit-local-binding [v {bindings :bindings es :es}]
     {:pre [(= (count bindings) 2) (= (count es) 1)]}
 
@@ -512,55 +523,75 @@
 
   (visit-if-cond [v {predicate :predicate then :then else :else}]
     (let [[reduced-predicate new-env new-resolved new-pending] (accept predicate v)
+          [concrete-predicate realizations pending] (if (thunk? reduced-predicate)
+                                                      ;; the predicate is deferred -- we need to perform as many
+                                                      ;; operations as necessary to get a concrete value and proceed
+                                                      ;; with evaluation.
+                                                      (realize (:id reduced-predicate) new-pending)
+
+                                                      ;; the predicate is realized -- proceed with evaluation
+                                                      [(hoppl/to-clojure-value reduced-predicate) {} new-pending])
+
           visitor (->> v
                        (with-env new-env)
-                       (with-resolved new-resolved)
-                       (with-pending new-pending))]
-      (if (hoppl/to-clojure-value reduced-predicate)
+                       (with-resolved (merge new-resolved realizations))
+                       (with-pending pending))]
+
+      (if concrete-predicate
         (accept then visitor)
         (accept else visitor))))
 
-  (visit-fn-application [{rho :rho env :env store :store :as v} {name :name args :args}]
+  (visit-fn-application [{rho :rho env :env :as v} {name :name args :args}]
     (let [[reduced-args new-env new-resolved new-pending] (eval-coll args v)
-          clojure-args (map hoppl/to-clojure-value reduced-args)
-          builtin? #(contains? eval/all-builtins %)
-          visitor (->> v
-                       (with-env new-env)
-                       (with-resolved new-resolved)
-                       (with-pending new-pending))]
+          defer? (some thunk? reduced-args)]
 
-      (cond
-        ;; if the function being applied is a user-defined procedure
-        ;; (or a builtin higher order function), we extend the
-        ;; environment with the function parameters being bound to the
-        ;; arguments passed, and recursively evaluate the expression
-        ;; contained in the procedure definition
-        (contains? rho name) (let [[param-names e] (get rho name)
-                                   env-extension (zipmap param-names reduced-args)]
-                               (accept e (with-env env-extension visitor)))
+      (if defer?
+        ;; one of the function's argument is deferred -- defer the
+        ;; entire function and add a thunk to the pending list.
+        (let [thunk (thunk. (ast/fresh-sym "thunk-fn") :fn reduced-args)]
+          [thunk new-env new-resolved (conj new-pending thunk)])
 
-        ;; in case the function being applied is a built-in,
-        ;; first-order function, we immediately apply it with the
-        ;; arguments given. The result should be a constant value.
-        (builtin? name) [(ast/constant. (apply (eval/builtin-fn name) clojure-args)) new-env new-resolved new-pending]
+        ;; all of the arguments are realized -- apply the function
+        ;; right away
+        (let [clojure-args (map hoppl/to-clojure-value reduced-args)
+              builtin? #(contains? eval/all-builtins %)
+              visitor (->> v
+                           (with-env new-env)
+                           (with-resolved new-resolved)
+                           (with-pending new-pending))]
 
-        ;; if the function being applied is in the evaluation context,
-        ;; it means it was defined as a lambda previously (no
-        ;; type-checking to ensure this is actually the case is
-        ;; performed).
-        ;;
-        ;; This case is similar to the user-defined procedure
-        ;; scenario. The value associated with the name in the
-        ;; evaluation environment is treated as a lambda AST node, the
-        ;; environment is extended with the lambda parameters being
-        ;; bound to the arguments passed, and the expression
-        ;; associated with the lambda is recursively evaluated.
-        (contains? env name) (let [{name :name params :args e :e} (get env name)
-                                   params-names (map :name params)
-                                   env-extension (zipmap params-names reduced-args)]
-                               (accept e (with-env env-extension visitor)))
+          (cond
+            ;; if the function being applied is a user-defined procedure
+            ;; (or a builtin higher order function), we extend the
+            ;; environment with the function parameters being bound to the
+            ;; arguments passed, and recursively evaluate the expression
+            ;; contained in the procedure definition
+            (contains? rho name) (let [[param-names e] (get rho name)
+                                       env-extension (zipmap param-names reduced-args)]
+                                   (accept e (with-env env-extension visitor)))
 
-        :else (utils/foppl-error (str "Undefined function: " name)))))
+            ;; in case the function being applied is a built-in,
+            ;; first-order function, we immediately apply it with the
+            ;; arguments given. The result should be a constant value.
+            (builtin? name) [(ast/constant. (apply (eval/builtin-fn name) clojure-args)) new-env new-resolved new-pending]
+
+            ;; if the function being applied is in the evaluation context,
+            ;; it means it was defined as a lambda previously (no
+            ;; type-checking to ensure this is actually the case is
+            ;; performed).
+            ;;
+            ;; This case is similar to the user-defined procedure
+            ;; scenario. The value associated with the name in the
+            ;; evaluation environment is treated as a lambda AST node, the
+            ;; environment is extended with the lambda parameters being
+            ;; bound to the arguments passed, and the expression
+            ;; associated with the lambda is recursively evaluated.
+            (contains? env name) (let [{name :name params :args e :e} (get env name)
+                                       params-names (map :name params)
+                                       env-extension (zipmap params-names reduced-args)]
+                                   (accept e (with-env env-extension visitor)))
+
+            :else (utils/foppl-error (str "Undefined function: " name)))))))
 
   (visit-sample [{sample-fn :sample-fn :as v} {dist :dist uuid :uuid}]
     ;; behavior is inference-algorithm specific. Invoke the
@@ -585,7 +616,7 @@
     [thunk env resolved new-pending]))
 
 (defn- lazy-observe [dist val uuid env resolved pending]
-  (let [thunk (ast/thunk. (ast/fresh-sym "thunk-observe") :observe) [dist val uuid]
+  (let [thunk (ast/thunk. (ast/fresh-sym "thunk-observe") :observe [dist val uuid])
         new-pending (conj pending thunk)]
     [thunk env resolve new-pending]))
 
@@ -613,6 +644,21 @@
         v (lazy-evaluation-visitor. rho env resolved pending sample-fn observe-fn)]
     (accept e v)))
 
+(defn- forward [program interpreter]
+  "Runs the program under the given `interpreter`. If the resulting
+  expressing is a thunk, makes external calls to the inference engine
+  until the final value is returned."
+
+  (let [[result env resolved pending] (hoppl/forward program interpreter)]
+
+    (if (thunk? result)
+      ;; if the evaluation result is a thunk, concretize pending
+      ;; operations to get the final result (first element in the
+      ;; vector returned by `realize`)
+      (first (realize (:id result) pending))
+
+      ;; otherwise, return the result iself
+      result)))
 
 (defn perform
   "Performs waits for communication from some inference engine that
@@ -661,7 +707,7 @@
              (= type MessageBody/Run) (do
                                         (logger "Running the model")
 
-                                        (let [[{val :n} *] (hoppl/forward program eager-interpreter)]
+                                        (let [{val :n} (forward program eager-interpreter)]
                                           (run-result socket val)))
 
              (= type MessageBody/Forward) (do
