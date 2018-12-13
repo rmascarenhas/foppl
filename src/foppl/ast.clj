@@ -41,6 +41,12 @@
 ;; accepted.
 (defrecord lambda [name args e])
 
+;; a thunk is a piece of deferred execution. Every thunk node has a
+;; unique identifier, a type and the arguments to realize the
+;; thunk. Thunks are only used during lazy-evaluation of a model with
+;; a separate inference engine.
+(defrecord thunk [id type args])
+
 ;; a FOPPL local binding consists of a name and value pair, and a list
 ;; of target expressions where substitution is going to happen. In
 ;; this stage, this node allows the sugared version with multiple
@@ -252,6 +258,7 @@
   (visit-literal-map [v literal-map])
   (visit-procedure [v def])
   (visit-lambda [v lam])
+  (visit-thunk [v thunk])
   (visit-local-binding [v binding])
   (visit-foreach [v foreach])
   (visit-loop [v loops])
@@ -292,6 +299,11 @@
   node
   (accept [n v]
     (visit-lambda v n)))
+
+(extend-type thunk
+  node
+  (accept [n v]
+    (visit-thunk v n)))
 
 (extend-type local-binding
   node

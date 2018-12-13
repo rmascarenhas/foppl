@@ -7,7 +7,7 @@
             [anglican.runtime :as anglican]
             [zeromq.zmq :as zmq])
 
-  (:import [foppl.ast constant literal-vector literal-map]
+  (:import [foppl.ast constant literal-vector literal-map thunk]
            [com.google.flatbuffers FlatBufferBuilder]
            [java.nio ByteBuffer]
            [ppx Handshake HandshakeResult Message MessageBody Run RunResult
@@ -419,8 +419,6 @@
     (construct-message fbb MessageBody/BackwardResult br)
     (send-msg socket fbb)))
 
-(defrecord thunk [id type args])
-
 ;; `lazy-evaluation-visitor` lazily evaluates `sample` and `observe`
 ;; expressions and batches operations at strict points (control flow
 ;; and termination).
@@ -582,7 +580,7 @@
       (observe-fn reduced-dist reduced-val uuid new-env new-resolved new-pending))))
 
 (defn- lazy-sample [{dist :n} {val :n} uuid env resolved pending]
-  (thunk. (ast/fresh-sym "thunk-sample") :sample [dist val uuid]))
+  (ast/thunk. (ast/fresh-sym "thunk-sample") :sample [dist val uuid]))
 
 (defn- lazy-observe [{dist :n} {val :n} uuid env resolved pending])
 
