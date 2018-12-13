@@ -120,7 +120,7 @@
     ;; error out in case the message type is different from the valid
     ;; set of expected messages
     (when-not (some #(= message-type %) types)
-      (utils/foppl-error (str "PPX: Unexpected message received (" message-type ")")))
+      (utils/foppl-error (str "PPX: Unexpected message received (" message-type "), waiting for: " types)))
 
     ;; parse the body as an instance of a message of the given type.
     [message-type (.body message obj)]))
@@ -342,7 +342,7 @@
     ;; the evaluation module and proceed.
     (let [[_ sample-result] (receive-msg socket [MessageBody/SampleResult])
           result (.result sample-result)
-          value (first (tensor-to-seq result))]
+          value (tensor-to-seq result)]
 
       (when-not (= (count value) 1)
         (utils/foppl-error (str "Sampled values should be scalars, got:" value)))
@@ -810,7 +810,7 @@
              realize-fn (partial realize socket)
              eager-interpreter (partial lazy-interpret sample-fn observe-fn identity)
              lazy-interpreter (partial lazy-interpret lazy-sample lazy-observe realize-fn)
-             next-msg #(receive-msg socket [MessageBody/Run MessageBody/Forward MessageBody/Backward])]
+             next-msg #(receive-msg socket [MessageBody/Run MessageBody/Forward MessageBody/Backward MessageBody/Handshake])]
          (loop [[type message] (next-msg)]
            (cond
              (= type MessageBody/Run) (do
@@ -828,7 +828,11 @@
                                              (autograd-backward socket
                                                                 (.name message)
                                                                 (tensor-to-seq (.input message))
-                                                                (tensor-to-seq (.gradOutput message)))))
+                                                                (tensor-to-seq (.gradOutput message))))
+
+             (= type MessageBody/Handshake) (do
+                                              (logger "Got handshake from" (.systemName message))
+                                              (handle-handshake socket message)))
 
 
            (recur (next-msg))))))))
