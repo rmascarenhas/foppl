@@ -59,11 +59,11 @@
   (visit-fn-application [v {name :name args :args}]
     (ast/fn-application. name (accept-coll args v)))
 
-  (visit-sample [v {dist :dist}]
-    (ast/sample. (accept dist v)))
+  (visit-sample [v {dist :dist uuid :uuid}]
+    (ast/sample. (accept dist v) uuid))
 
-  (visit-observe [v {dist :dist val :val}]
-    (ast/observe. (accept dist v) (accept val v))))
+  (visit-observe [v {dist :dist val :val uuid :uuid}]
+    (ast/observe. (accept dist v) (accept val v) uuid)))
 
 ;; let forms are allowed to contain multiple bindings at the same time. In addition,
 ;; multiple expressions can be passed to be "body" of a 'let' expression. However,
@@ -146,11 +146,11 @@
   (visit-fn-application [v {name :name args :args}]
     (ast/fn-application. name (accept-coll args v)))
 
-  (visit-sample [v {dist :dist}]
-    (ast/sample. (accept dist v)))
+  (visit-sample [v {dist :dist uuid :uuid}]
+    (ast/sample. (accept dist v) uuid))
 
-  (visit-observe [v {dist :dist val :val}]
-    (ast/observe. (accept dist v) (accept val v)))
+  (visit-observe [v {dist :dist val :val uuid :uuid}]
+    (ast/observe. (accept dist v) (accept val v) uuid))
   )
 
 ;; The 'foreach' construct allows a FOPPL program to iterate over collections
@@ -215,11 +215,11 @@
   (visit-fn-application [v {name :name args :args}]
     (ast/fn-application. name (accept-coll args v)))
 
-  (visit-sample [v {dist :dist}]
-    (ast/sample. (accept dist v)))
+  (visit-sample [v {dist :dist uuid :uuid}]
+    (ast/sample. (accept dist v) uuid))
 
-  (visit-observe [v {dist :dist val :val}]
-    (ast/observe. (accept dist v) (accept val v)))
+  (visit-observe [v {dist :dist val :val uuid :uuid}]
+    (ast/observe. (accept dist v) (accept val v) uuid))
   )
 
 ;; desugars 'loop' forms to a series of bindings for each expression.
@@ -283,11 +283,11 @@
           ;; If we are at index 0, the initial expression given is used. Otherwise, the
           ;; name used for the previous binding is fetched and passed to the function 'f'.
           accum-binding-at (fn [n] (let [name (nth accum-vars n)
-                                        current (cond
-                                                  (= n 0) (accept e v)
-                                                  :else (nth accum-vars (dec n)))
-                                        args (cons (ast/constant. n) (cons current bound-vars))]
-                                    [name (ast/fn-application. f args)]))
+                                         current (cond
+                                                   (= n 0) (accept e v)
+                                                   :else (nth accum-vars (dec n)))
+                                         args (cons (ast/constant. n) (cons current bound-vars))]
+                                     [name (ast/fn-application. f args)]))
 
           ;; generates a list of bindings according to the constant number of
           ;; iterations passed to 'loop'.
@@ -311,11 +311,11 @@
   (visit-fn-application [v {name :name args :args}]
     (ast/fn-application. name (accept-coll args v)))
 
-  (visit-sample [v {dist :dist}]
-    (ast/sample. (accept dist v)))
+  (visit-sample [v {dist :dist uuid :uuid}]
+    (ast/sample. (accept dist v) uuid))
 
-  (visit-observe [v {dist :dist val :val}]
-    (ast/observe. (accept dist v) (accept val v)))
+  (visit-observe [v {dist :dist val :val uuid :uuid}]
+    (ast/observe. (accept dist v) (accept val v) uuid))
   )
 
 ;; underscores ('_) are used in FOPPL programs (and in other desugaring steps) to
@@ -365,11 +365,11 @@
   (visit-fn-application [v {name :name args :args}]
     (ast/fn-application. name (accept-coll args v)))
 
-  (visit-sample [v {dist :dist}]
-    (ast/sample. (accept dist v)))
+  (visit-sample [v {dist :dist uuid :uuid}]
+    (ast/sample. (accept dist v) uuid))
 
-  (visit-observe [v {dist :dist val :val}]
-    (ast/observe. (accept dist v) (accept val v)))
+  (visit-observe [v {dist :dist val :val uuid :uuid}]
+    (ast/observe. (accept dist v) (accept val v) uuid))
   )
 
 (defn- apply-desugaring [v {defs :defs e :e}]
